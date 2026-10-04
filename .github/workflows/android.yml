@@ -3,7 +3,7 @@ name: Android CI
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['v*', 'apk-*-debug']
   pull_request:
     branches: [main]
 
@@ -77,6 +77,66 @@ jobs:
       - name: Verify concurrent settings writes
         shell: pwsh
         run: ./tools/task-notifications/settings-file.test.ps1
+
+  debug-release:
+    name: Publish Debug APK to Release
+    if: startsWith(github.ref, 'refs/tags/apk-') && endsWith(github.ref, '-debug')
+    needs: [checks, windows-checks]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Download and verify tested APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_name="$(sed -nE 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' app/build.gradle.kts)"
+          version_code="$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' app/build.gradle.kts)"
+          if [[ -z "${version_name}" || -z "${version_code}" || "apk-${version_name}-debug" != "${GITHUB_REF_NAME}" ]]; then
+            echo "::error::Debug release tag does not match app version"
+            exit 1
+          fi
+          mkdir -p release
+          gh run download "${GITHUB_RUN_ID}" --name codex-quota-debug-apk --dir release
+          apk_file="release/Codex-Link-v${version_name}-debug.apk"
+          mv release/app-debug.apk "${apk_file}"
+          aapt_tool=""
+          signer_tool=""
+          for tool in "${ANDROID_HOME}"/build-tools/*/aapt; do
+            if [[ -x "${tool}" ]]; then aapt_tool="${tool}"; fi
+          done
+          for tool in "${ANDROID_HOME}"/build-tools/*/apksigner; do
+            if [[ -x "${tool}" ]]; then signer_tool="${tool}"; fi
+          done
+          [[ -n "${aapt_tool}" && -n "${signer_tool}" ]]
+          badging="$("${aapt_tool}" dump badging "${apk_file}")"
+          package_line="$(printf '%s\n' "${badging}" | sed -n '/^package:/p')"
+          [[ "${package_line}" == *"name='com.codex.quota.debug'"* ]]
+          [[ "${package_line}" == *"versionCode='${version_code}'"* ]]
+          [[ "${package_line}" == *"versionName='${version_name}'"* ]]
+          "${signer_tool}" verify --print-certs "${apk_file}" > release/signature.txt
+          (cd release && sha256sum "Codex-Link-v${version_name}-debug.apk" > "Codex-Link-v${version_name}-debug.apk.sha256")
+          cp "RELEASE_NOTES_${version_name}_LINK.md" release/notes.md
+          printf '\nAPK 签名证书 SHA256：`%s`\n' "$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' release/signature.txt)" >> release/notes.md
+
+      - name: Publish APK and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" --json isDraft > release/existing.json 2>/dev/null; then
+            [[ "$(jq -r .isDraft release/existing.json)" == true ]] || { echo '::error::Release is already published'; exit 1; }
+          else
+            gh release create "${GITHUB_REF_NAME}" --verify-tag --draft --title "Codex Link ${GITHUB_REF_NAME#apk-}" --notes-file release/notes.md
+          fi
+          gh release upload "${GITHUB_REF_NAME}" release/*.apk release/*.sha256 --clobber
+          gh release edit "${GITHUB_REF_NAME}" --draft=false --latest --notes-file release/notes.md
 
   release:
     name: Sign & Publish Release APK

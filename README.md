@@ -6,11 +6,11 @@
 
 在 Android 手机上查看多个 ChatGPT / Codex 账号的额度，并通过配对电脑接收任务提醒、阅读和继续 Codex 对话。支持简体中文与英文。
 
-[下载 1.0.0 APK](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.0-debug/Codex-Link-v1.0.0-debug.apk) · [发布说明](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.0-debug) · [全部版本](https://github.com/masterli0312/Codex-Link/releases)
+[下载 1.0.1 APK](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.1-debug/Codex-Link-v1.0.1-debug.apk) · [发布说明](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.1-debug) · [全部版本](https://github.com/masterli0312/Codex-Link/releases)
 
-> 项目由 Codex Usage 更名为 **Codex Link**。这是新仓库的首个版本，安装后显示 **Codex Link 1.0.0**。沿用原包名及签名，可覆盖旧版 Codex Usage 并保留数据。
+> 项目由 Codex Usage 更名为 **Codex Link**。当前版本为 **1.0.1**，包含电脑与 Cloud 对话同步、附件展示、引导和界面更新。
 
-> 当前版本 **1.0.0**，Android **8.0+**，调试签名测试包。已配对的用户升级后还需从 App 重新分享电脑安装包，在电脑运行 `setup.cmd` 并按提示重启 Codex。只更新 APK 不会更新电脑组件。
+> 当前版本 **1.0.1**，Android **8.0+**，调试签名测试包。已配对的用户升级后还需从 App 重新分享电脑安装包，在电脑运行 `setup.cmd` 并按提示重启 Codex。只更新 APK 不会更新电脑组件。
 
 **电脑任务提醒和远程对话需要首次电脑配对。** 仅安装 App 或登录 ChatGPT 不能获取电脑任务事件。
 
@@ -35,7 +35,7 @@
 | 双向对话 | 同步电脑对话、手机新建或继续、停止生成、执行中补充要求或完成后发送。 |
 | 对话管理 | 搜索、重命名、手机置顶、归档和恢复，查看与加载较早历史。 |
 | 对话输入 | 模型与可用思考强度、权限、计划和目标模式、支持的插件、图片与文件、语音转文字。 |
-| 执行过程 | 紧凑显示“命令执行”“文件修改”及插件调用，可展开查看详细过程。 |
+| 执行过程 | 灰色图标与简洁标签；完成后通过用时条目展开本轮执行过程。 |
 | Cloud（实验性） | 在手机管理官方云环境、准备项目和进入云对话，详细验证范围见下文。 |
 | 日常体验 | 浅色/深色、Material You 动态颜色、桌面小组件与本地数据清理。 |
 
@@ -50,12 +50,12 @@
 
 ## 安装与升级
 
-1. 下载 [Codex-Link-v1.0.0-debug.apk](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.0-debug/Codex-Link-v1.0.0-debug.apk)。
+1. 下载 [Codex-Link-v1.0.1-debug.apk](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.1-debug/Codex-Link-v1.0.1-debug.apk)。
 2. 在 Android 8.0 或更新系统打开 APK，按系统提示允许安装。
 3. 首次打开添加自己的账号；需要提醒时允许通知和后台运行。
 4. 已使用电脑同步的用户：更新手机后，重新分享电脑安装 ZIP，在原电脑运行 `setup.cmd`，按安装器提示重启 Codex。
 
-包名为 `com.codex.quota.debug`，显示版本 **1.0.0**，内部版本号 **34**。沿用此前公开测试包签名，可覆盖安装并保留账号、配对和设置。不同签名的安装包不能覆盖；卸载会清除手机本地数据。
+包名为 `com.codex.quota.debug`，显示版本 **1.0.1**，内部版本号 **35**。**本次 GitHub 构建与旧版公开 APK 签名不同，不能覆盖安装。保留数据升级需要原签名密钥构建，请先保留旧版；卸载会清除手机本地账号、配对和设置。**
 
 发布页同时提供 SHA256 校验文件。此版本不是正式签名生产包。
 
@@ -128,7 +128,16 @@ Android 13+ 需要通知权限；声音和震动由系统通知渠道管理。�
 
 详细边界和卸载方法见 [电脑连接指南](docs/task-notifications.md)。
 
-## 1.0.0 更新摘要
+## 1.0.1 更新摘要
+
+- 修复电脑与 Cloud 最新消息同步、正文与复制布局，以及附件路径展示。
+- 统一浅色背景、输入框和简洁工具条目。
+- 支持排队消息编辑、取消与立即引导，确认送达后进入正文上方；完成后显示用时与完整回答。
+- Release 自动发布版本匹配的 APK 和校验文件。
+
+[1.0.1 完整发布说明](RELEASE_NOTES_1.0.1_LINK.md)。本次未进行手机安装实测，Cloud 完整附件上传仍未接入。
+
+## 1.0.0 历史更新摘要
 
 - 新项目首版：应用显示 Codex Link 1.0.0，通知卡片使用桌面图标，状态栏使用对应的单色轮廓。
 
@@ -164,7 +173,7 @@ powershell -NoProfile -File tools/task-notifications/install-notify.test.ps1
 pwsh -NoProfile -File tools/task-notifications/settings-file.test.ps1
 ```
 
-GitHub Actions 对 `main` 和 Pull Request 执行 Android 与 Windows 检查。`v*` 标签另触发正式签名构建，需配置签名 Secrets；当前测试包使用 `apk-1.0.0-debug` 标签发布，正式签名流程尚未验证。
+GitHub Actions 对 `main` 和 Pull Request 执行 Android 与 Windows 检查。`v*` 标签另触发正式签名构建，需配置签名 Secrets；`apk-*-debug` 标签在 Android 与 Windows 检查通过后自动发布测试 APK 和 SHA256，核对标签、内部版本和有效签名；当前标签为 `apk-1.0.1-debug`。正式签名流程尚未验证。
 
 正式构建可在被 Git 忽略的 `signing.properties` 中配置 `storeFile`、`storePassword`、`keyAlias`、`keyPassword`，或使用 `ANDROID_KEYSTORE_FILE`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD` 环境变量，运行 `assembleRelease`。不要提交密钥库或口令。
 
