@@ -1,0 +1,163 @@
+package com.codex.quota.ui
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import androidx.navigation.NavController
+import androidx.navigation.compose.rememberNavController
+import com.codex.quota.CodexQuotaApplication
+import com.codex.quota.domain.model.UserPreferences
+import com.codex.quota.notifications.task.TaskCompletionService
+import com.codex.quota.ui.navigation.AppNavigation
+import com.codex.quota.ui.navigation.Screen
+import com.codex.quota.ui.theme.CodexQuotaTheme
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.launch
+
+class MainActivity : AppCompatActivity() {
+
+    private var pendingAccountLink by androidx.compose.runtime.mutableStateOf<String?>(null)
+    private var pendingTaskRoute by androidx.compose.runtime.mutableStateOf<String?>(null)
+    private var activeNavController: NavController? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
+        super.onCreate(savedInstanceState)
+
+        val app = application as CodexQuotaApplication
+        // Navigation restores its own current screen. Replaying the launch notification
+        // after a picker/configuration recreation would jump back to the old conversation.
+        if (savedInstanceState == null) handleIncomingIntent(intent, app)
+
+        setContent {
+            val preferencesFlow = remember {
+                app.preferencesRepository.observePreferences()
+                    .catch { emit(UserPreferences()) }
+            }
+            val preferences by preferencesFlow.collectAsState(initial = null)
+
+            val loadedPreferences = preferences
+            if (loadedPreferences == null) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {}
+                return@setContent
+            }
+
+            val permissionLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.RequestPermission()
+            ) { _ -> }
+
+            LaunchedEffect(Unit) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    val isGranted = ContextCompat.checkSelfPermission(
+                        this@MainActivity,
+                        Manifest.permission.POST_NOTIFICATIONS
+                    ) == PackageManager.PERMISSION_GRANTED
+
+                    if (!isGranted && (loadedPreferences.signedOutNotificationsEnabled || loadedPreferences.quotaAlertsEnabled || loadedPreferences.fiveHourResetReminderEnabled || loadedPreferences.weeklyResetReminderEnabled || loadedPreferences.resetOpportunityAlertsEnabled)) {
+                        permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+            }
+
+            CodexQuotaTheme(
+                themeMode = loadedPreferences.themeMode,
+                dynamicColor = loadedPreferences.dynamicColor
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    val navController = rememberNavController()
+                    activeNavController = navController
+
+                    val startDestination = remember {
+                        if (loadedPreferences.hasCompletedOnboarding) {
+                            Screen.Dashboard.route
+                        } else {
+                            Screen.Onboarding.route
+                        }
+                    }
+
+                    AppNavigation(
+                        app = app,
+                        navController = navController,
+                        startDestination = startDestination
+                    )
+                    LaunchedEffect(pendingAccountLink) {
+                        pendingAccountLink?.let { accountId ->
+                            navController.navigate(Screen.AccountDetail.createRoute(accountId)) {
+                                popUpTo(Screen.Dashboard.route) { inclusive = false }
+                                launchSingleTop = true
+                            }
+                            pendingAccountLink = null
+                        }
+                    }
+                    LaunchedEffect(pendingTaskRoute) {
+                        pendingTaskRoute?.let { route ->
+                            navController.navigate(route) {
+                                popUpTo(Screen.Dashboard.route) { inclusive = false }
+                                launchSingleTop = true
+                            }
+                            pendingTaskRoute = null
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        TaskCompletionService.startIfEnabled(this)
+        val app = application as CodexQuotaApplication
+        lifecycleScope.launch {
+            // Opening the app always refreshes, including when periodic background sync is off.
+            app.repository.refreshAllAccounts()
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val app = application as CodexQuotaApplication
+        handleIncomingIntent(intent, app)
+        pendingAccountLink = com.codex.quota.ui.navigation.accountIdFromNotificationLink(intent.dataString)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?, app: CodexQuotaApplication) {
+        val recordId = intent?.getStringExtra(TaskCompletionService.TASK_RECORD_EXTRA)
+        if (recordId?.matches(Regex("[a-f0-9]{64}")) == true) pendingTaskRoute = Screen.TaskRecord.createRoute(recordId)
+        else if (intent?.getBooleanExtra(TaskCompletionService.TASK_HISTORY_EXTRA, false) == true) pendingTaskRoute = Screen.TaskHistory.route
+        intent?.removeExtra(TaskCompletionService.TASK_RECORD_EXTRA)
+        intent?.removeExtra(TaskCompletionService.TASK_HISTORY_EXTRA)
+        val data: Uri? = intent?.data
+        if (data != null && data.scheme == "codexquota" && data.host == "oauth") {
+            app.currentOAuthCallbackUri = data
+            activeNavController?.navigate(Screen.AddAccount.route) {
+                launchSingleTop = true
+            }
+        }
+    }
+}

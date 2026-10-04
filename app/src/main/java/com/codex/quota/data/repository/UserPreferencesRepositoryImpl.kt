@@ -1,0 +1,109 @@
+package com.codex.quota.data.repository
+
+import com.codex.quota.data.local.DataStoreManager
+import com.codex.quota.domain.model.AppThemeMode
+import com.codex.quota.domain.model.QuotaWindow
+import com.codex.quota.domain.model.RefreshIntervalMinutes
+import com.codex.quota.domain.model.UserPreferences
+import com.codex.quota.domain.model.WidgetThemeMode
+import com.codex.quota.domain.repository.UserPreferencesRepository
+import kotlinx.coroutines.flow.Flow
+
+class UserPreferencesRepositoryImpl(
+    private val dataStoreManager: DataStoreManager
+) : UserPreferencesRepository {
+
+    override fun observePreferences(): Flow<UserPreferences> =
+        dataStoreManager.userPreferencesFlow
+
+    override suspend fun getPreferences(): UserPreferences =
+        dataStoreManager.getPreferences()
+
+    override suspend fun setThemeMode(mode: AppThemeMode) {
+        dataStoreManager.setThemeMode(mode)
+    }
+
+    override suspend fun setDynamicColor(enabled: Boolean) {
+        dataStoreManager.setDynamicColor(enabled)
+    }
+
+    override suspend fun setWidgetThemeMode(mode: WidgetThemeMode) {
+        dataStoreManager.setWidgetThemeMode(mode)
+    }
+
+    override suspend fun setBackgroundSyncEnabled(enabled: Boolean) {
+        dataStoreManager.setBackgroundSyncEnabled(enabled)
+    }
+
+    override suspend fun setAutoActivateFiveHourAccount(accountId: String, enabled: Boolean) {
+        dataStoreManager.setAutoActivateFiveHourAccount(accountId, enabled)
+    }
+
+    override suspend fun setRefreshInterval(interval: RefreshIntervalMinutes) {
+        dataStoreManager.setRefreshInterval(interval)
+    }
+
+    override suspend fun setRefreshOnAppOpen(enabled: Boolean) {
+        dataStoreManager.setRefreshOnAppOpen(enabled)
+    }
+
+    override suspend fun setSignedOutNotificationsEnabled(enabled: Boolean) {
+        dataStoreManager.setSignedOutNotificationsEnabled(enabled)
+    }
+
+    override suspend fun setQuotaAlertsEnabled(enabled: Boolean) {
+        dataStoreManager.setQuotaAlertsEnabled(enabled)
+    }
+
+    override suspend fun setIncludeFiveHourQuotaAlerts(enabled: Boolean) {
+        dataStoreManager.setIncludeFiveHourQuotaAlerts(enabled)
+    }
+
+    override suspend fun setFiveHourResetReminderEnabled(enabled: Boolean) {
+        dataStoreManager.setFiveHourResetReminderEnabled(enabled)
+    }
+
+    override suspend fun setWeeklyResetReminderEnabled(enabled: Boolean) = dataStoreManager.setWeeklyResetReminderEnabled(enabled)
+
+    override suspend fun setResetOpportunityAlertsEnabled(enabled: Boolean) = dataStoreManager.setResetOpportunityAlertsEnabled(enabled)
+
+    override suspend fun setIncludeWeeklyQuotaAlerts(enabled: Boolean) {
+        dataStoreManager.setIncludeWeeklyQuotaAlerts(enabled)
+    }
+
+    override suspend fun setIncludeGptReserveAlerts(enabled: Boolean) {
+        dataStoreManager.setIncludeGptReserveAlerts(enabled)
+    }
+
+    override suspend fun setQuotaAlertThresholds(thresholds: Set<Int>) {
+        dataStoreManager.setQuotaAlertThresholds(thresholds)
+    }
+
+    override suspend fun toggleQuotaAlertThreshold(threshold: Int) {
+        dataStoreManager.toggleQuotaAlertThreshold(threshold)
+    }
+
+    override suspend fun setHasCompletedOnboarding(completed: Boolean) {
+        dataStoreManager.setHasCompletedOnboarding(completed)
+    }
+
+    override suspend fun setRenewalBannerDismissed(accountId: String, dismissed: Boolean) {
+        dataStoreManager.setRenewalBannerDismissed(accountId, dismissed)
+    }
+
+    override suspend fun getLastNotifiedQuotaThreshold(accountId: String, window: QuotaWindow): Int? {
+        return dataStoreManager.getLastNotifiedQuotaThreshold(accountId, window)
+    }
+
+    override suspend fun setLastNotifiedQuotaThreshold(accountId: String, threshold: Int?, window: QuotaWindow) {
+        dataStoreManager.setLastNotifiedQuotaThreshold(accountId, threshold, window)
+    }
+
+    override suspend fun isSignedOutAlertNotified(accountId: String): Boolean {
+        return dataStoreManager.isSignedOutAlertNotified(accountId)
+    }
+
+    override suspend fun setSignedOutAlertNotified(accountId: String, notified: Boolean) {
+        dataStoreManager.setSignedOutAlertNotified(accountId, notified)
+    }
+}
