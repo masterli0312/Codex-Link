@@ -29,6 +29,7 @@ class CloudEnvironmentViewModelTest {
         every { app.repository } returns accounts
         every { app.cloudRepository } returns repository
         every { app.cloudStore } returns store
+        every { repository.watchDetails(any(),any()) } returns emptyFlow()
         every { store.cache(any()) } returns null
         coEvery { repository.identity("account-a") } returns identity
         coEvery { repository.identity("account-b") } returns CloudIdentity("account-b", "workspace-b")
@@ -161,7 +162,7 @@ class CloudEnvironmentViewModelTest {
         vm.selectAccount("account-b"); runCurrent(); vm.configureEnvironment(); advanceUntilIdle()
         assertEquals(CloudPreparationChoice("model-a","low"),vm.state.value.editor?.choice)
     }
-    @Test fun `setup running accepts mobile input against the expected active turn`() = runTest(dispatcher) {
+    @Test fun `setup queues mobile input and explicit guidance targets the expected active turn`() = runTest(dispatcher) {
         coEvery { repository.config(identity,any(),any()) } returns config()
         coEvery { repository.repositories(identity) } returns emptyList()
         coEvery { repository.details(identity,"setup-thread") } returns CloudDetails(CloudTask("setup-thread","Setup","running"),emptyList(),activeTurnId = "active-turn")
@@ -171,6 +172,9 @@ class CloudEnvironmentViewModelTest {
         vm.selectAccount(identity.accountId); runCurrent(); vm.resumeReads(); advanceUntilIdle()
         vm.editEnvironment("w~asenvcfg_fixture"); advanceUntilIdle(); vm.editorAnswer("Please add a check")
         vm.sendSetupAnswer(); advanceUntilIdle()
+        coVerify(exactly = 0) { repository.reply(any(),any(),any(),any(),any()) }
+        assertEquals("Please add a check",vm.state.value.cache?.pendingReplies?.single()?.text)
+        vm.steerQueuedReply(); advanceUntilIdle()
         coVerify(exactly = 1) { repository.reply(identity,"setup-thread","Please add a check",CloudPreparationChoice("model-a","low"),"active-turn") }
         assertEquals("",vm.state.value.editor?.answer); assertNull(vm.state.value.error)
         verify { store.submitted(identity,any(),"active-turn") }
@@ -199,4 +203,36 @@ class CloudEnvironmentViewModelTest {
         coVerify(exactly = 1) { repository.reply(identity,"task-a","Next question",CloudPreparationChoice("model-a","low"),"") }
         assertEquals("",vm.state.value.reply); assertFalse(vm.state.value.sending); assertNull(vm.state.value.error)
     }
+    @Test fun `queued input starts once after completion and stopping preserves it without automatic send`() = runTest(dispatcher) {
+        coEvery { repository.config(identity,any(),any()) } returns config()
+        coEvery { repository.repositories(identity) } returns emptyList()
+        var details = CloudDetails(CloudTask("setup-thread","Setup","running"),emptyList(),activeTurnId = "active-turn",latestTurnId = "active-turn")
+        coEvery { repository.details(identity,"setup-thread") } coAnswers { details }
+        coEvery { repository.reply(identity,"setup-thread","Next request",any(),"") } returns "next-turn"
+        every { store.claim(identity,any()) } returns true
+        val vm = CloudConversationViewModel(app,dispatcher)
+        vm.selectAccount(identity.accountId); runCurrent(); vm.resumeReads(); advanceUntilIdle()
+        vm.editEnvironment("w~asenvcfg_fixture"); advanceUntilIdle()
+        vm.editorAnswer("Next request"); vm.sendSetupAnswer(); advanceUntilIdle()
+        assertEquals(1,vm.state.value.cache?.pendingReplies?.size)
+        details = details.copy(task = details.task.copy(status = "completed"),activeTurnId = "")
+        vm.refresh(false); advanceUntilIdle(); vm.refresh(false); advanceUntilIdle()
+        coVerify(exactly = 1) { repository.reply(identity,"setup-thread","Next request",any(),"") }
+        assertTrue(vm.state.value.cache?.pendingReplies.isNullOrEmpty())
+        assertEquals("Next request",vm.state.value.editor?.details?.messages?.last()?.text)
+        details = CloudDetails(CloudTask("setup-thread","Setup","running"),emptyList(),activeTurnId = "next-turn",latestTurnId = "next-turn")
+        vm.editorAnswer("Keep this draft"); vm.sendSetupAnswer(); advanceUntilIdle()
+        coEvery { repository.stop(identity,"setup-thread","next-turn") } coAnswers {
+            details = details.copy(task = details.task.copy(status = "failed"),activeTurnId = "")
+            JsonObject(emptyMap())
+        }
+        vm.stop(); advanceUntilIdle(); vm.refresh(false); advanceUntilIdle()
+        assertEquals("Keep this draft",vm.state.value.cache?.pendingReplies?.single()?.text)
+        assertTrue(vm.state.value.cache?.pendingReplies?.single()?.attempted == true)
+        coVerify(exactly = 0) { repository.reply(identity,"setup-thread","Keep this draft",any(),any()) }
+        vm.editQueuedReply()
+        assertEquals("Keep this draft",vm.state.value.editor?.answer)
+        assertTrue(vm.state.value.cache?.pendingReplies.isNullOrEmpty())
+    }
+
 }

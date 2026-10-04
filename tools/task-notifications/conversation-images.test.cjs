@@ -129,3 +129,15 @@ test('after a bridge restart, image lookup reprojects bounded native history wit
   assert.deepEqual(calls,['thread/read','thread/turns/list']);assert.equal(events.at(-1).image.image_id,id);
  }finally{controller.close();f.close();}
 });
+
+test('the Cloud attachment manifest resolves real image references without publishing temporary paths',async()=>{
+ const f=fixture(),thread=crypto.randomUUID();try{
+  const dir=path.join(f.dir,'codex-remote-attachments','session');fs.mkdirSync(dir,{recursive:true});
+  const file=path.join(dir,'1-photo.png');fs.writeFileSync(file,png);
+  const item={id:'u',type:'userMessage',content:[{type:'text',text:'# Files mentioned by the user:\n\n## photo.png: '+file+'\n\n## My request for Codex:\nFix the image display'}]};
+  const references=projectImages(thread,item);assert.equal(references.length,1);
+  assert.deepEqual((await imageBytes(thread,references[0].id)).bytes,png);
+  assert.equal(JSON.stringify(references).includes(f.dir),false);
+  assert.equal(projectImages(thread,{...item,content:[{type:'text',text:'Example: '+item.content[0].text}]}).length,0);
+ }finally{f.close();}
+});

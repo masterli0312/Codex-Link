@@ -11,6 +11,9 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 @Serializable
+data class LocalQueuedReply(val id: String, val text: String, val attempted: Boolean = false)
+
+@Serializable
 data class TaskInboxRecord(
     val id: String,
     val receivedAt: Long,
@@ -44,7 +47,8 @@ data class TaskInboxRecord(
     val selectedMode: String = "", val goalRequest: RemoteCommand? = null, val goalResult: RemoteEvent? = null,
     val selectedPermission: String = "default", val sessionRequest: RemoteCommand? = null, val sessionResult: RemoteEvent? = null,
     val skillsRequest: RemoteCommand? = null, val skillsResult: RemoteEvent? = null,
-    val lastSessionResult: RemoteEvent? = null
+    val lastSessionResult: RemoteEvent? = null,
+    val localQueuedReplies: List<LocalQueuedReply> = emptyList()
 )
 
 /** Bounded, encrypted, backup-excluded cache. One record per event and pairing endpoint. */
@@ -123,7 +127,7 @@ class TaskInbox(context: Context) {
         } else if (event != null && ConversationSnapshotRules.currentTask(record, state) && !ConversationSnapshotRules.hasNativeReply(record, state) && !event.attachment_pending && event.status in setOf("completed", "interrupted") && event.turn_id.isNotBlank() && old.event?.status !in setOf("completed", "interrupted") && state.command.action !in RemoteGoalRules.rootActions) {
             record.snapshot.copy(remote_ref = record.snapshot.remote_ref?.copy(baseline_turn = event.turn_id),
                 reply = event.reply, completed_at = "",
-                messages = (record.snapshot.messages + listOf(TaskConversationMessage("user", ConversationHistory.activeInput(state, record.followUps)), TaskConversationMessage("assistant", boundedText(event.reply, 16_384)))).takeLast(60),
+                messages = (record.snapshot.messages + listOf(TaskConversationMessage("user", ConversationHistory.activeInput(state, record.followUps),"${event.turn_id}:phone-input",position = 0), TaskConversationMessage("assistant", boundedText(event.reply, 16_384),"${event.turn_id}:phone-reply",position = 1_000_000,phase = "final_answer"))).takeLast(60),
                 truncated = record.snapshot.truncated || event.partial || event.reply.toByteArray().size > 16_384)
         } else if (event?.status == "failed" && event.turn_id.isNotBlank() && ConversationSnapshotRules.currentTask(record, state)) {
             record.snapshot.copy(remote_ref = record.snapshot.remote_ref?.copy(baseline_turn = event.turn_id))
@@ -151,7 +155,40 @@ class TaskInbox(context: Context) {
     }
     fun updateFollowUp(id: String, requestId: String, update: (RemoteConversationState) -> RemoteConversationState) = synchronized(lock) {
         val record = read(id) ?: return@synchronized
-        save(record.copy(followUps = record.followUps.map { if (it.command.id == requestId) update(it) else it }))
+        val followUps = record.followUps.map { if (it.command.id == requestId) update(it) else it }
+        val accepted = followUps.any { it.command.id == requestId && it.event?.status == "steered" }
+        save(record.copy(followUps = followUps,localQueuedReplies = if (accepted) record.localQueuedReplies.filterNot { it.id == requestId } else record.localQueuedReplies))
+    }
+    fun queueLocalReply(id: String,text: String) = synchronized(lock) {
+        val record = requireNotNull(read(id))
+        require(record.snapshot.running || ConversationIndex.hasPendingTurn(record))
+        require(text.isNotBlank() && text.toByteArray().size <= 16384 && record.localQueuedReplies.size < 8)
+        save(record.copy(localQueuedReplies = record.localQueuedReplies + LocalQueuedReply(java.util.UUID.randomUUID().toString(),text)))
+    }
+    fun cancelLocalReply(id: String,key: String) = synchronized(lock) {
+        val record = requireNotNull(read(id))
+        // Once a steer is transmitted, only its matching acknowledgement owns it.
+        require(record.followUps.none { it.command.id == key && FollowUpState.pending(it) })
+        save(record.copy(localQueuedReplies = record.localQueuedReplies.filterNot { it.id == key }))
+    }
+    fun claimLocalReply(id: String): LocalQueuedReply? = synchronized(lock) {
+        val record = read(id) ?: return@synchronized null
+        if (record.snapshot.running || ConversationIndex.hasPendingTurn(record) || record.snapshot.remote_ref == null) return@synchronized null
+        val pending = record.localQueuedReplies.firstOrNull()?.takeIf { !it.attempted } ?: return@synchronized null
+        save(record.copy(localQueuedReplies = record.localQueuedReplies.map { if(it.id == pending.id) it.copy(attempted = true) else it }))
+        pending
+    }
+    fun markLocalReplyAttempted(id: String,key: String) = synchronized(lock) {
+        val record = requireNotNull(read(id))
+        save(record.copy(localQueuedReplies = record.localQueuedReplies.map { if(it.id == key) it.copy(attempted = true) else it }))
+    }
+    fun pauseQueuedReplies(id: String) = synchronized(lock) {
+        val record = read(id) ?: return@synchronized
+        save(record.copy(localQueuedReplies = record.localQueuedReplies.map { it.copy(attempted = true) }))
+    }
+    fun deliveredLocalReply(id: String,key: String) = synchronized(lock) {
+        val record = requireNotNull(read(id))
+        save(record.copy(localQueuedReplies = record.localQueuedReplies.filterNot { it.id == key }))
     }
     fun replaceDownloaded(record: TaskInboxRecord) = synchronized(lock) {
         val existing = read(record.id) ?: return@synchronized

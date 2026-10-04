@@ -156,6 +156,33 @@ class RemoteConversationClient(private val context: Context) {
             followUp(recordId, "steer", entry.command.text, queueId)
         }
     }
+    suspend fun queueReply(recordId: String,text: String) = withContext(Dispatchers.IO) {
+        inbox.queueLocalReply(recordId,text)
+    }
+    suspend fun cancelQueuedReply(recordId: String,key: String) = withContext(Dispatchers.IO) {
+        inbox.cancelLocalReply(recordId,key)
+    }
+    suspend fun steerLocalReply(recordId: String,key: String) = withContext(Dispatchers.IO) {
+        val record = requireNotNull(inbox.read(recordId))
+        val pending = requireNotNull(record.localQueuedReplies.firstOrNull { it.id == key })
+        val prior = record.followUps.firstOrNull { it.command.id == key }
+        val command = prior?.command ?: RemoteProtocol.followUp(requireNotNull(RemoteFollowUpRules.source(record)),"steer",pending.text).copy(id = key)
+        if (prior == null) inbox.requestFollowUp(recordId,command)
+        inbox.markLocalReplyAttempted(recordId,key)
+        publishCommand(recordId,command)
+    }
+    private suspend fun drainQueuedReply(recordId: String) {
+        val pending = inbox.claimLocalReply(recordId) ?: return
+        // Claim before network activity. send() persists its own request before
+        // publishing; reconnect recovery reuses that request instead of sending twice.
+        try {
+            val record = requireNotNull(inbox.read(recordId))
+            send(recordId,pending.text,record.selectedModel,record.selectedEffort,record.selectedMode)
+            inbox.deliveredLocalReply(recordId,pending.id)
+        }
+        catch(e: CancellationException) { throw e }
+        catch(_: Exception) { }
+    }
     private suspend fun recoverFollowUps(recordId: String) {
         inbox.read(recordId)?.followUps?.filter { FollowUpState.pending(it) }?.forEach {
             runCatching { publishCommand(recordId, RemoteProtocol.control(it.command, "status")) }
@@ -257,6 +284,7 @@ class RemoteConversationClient(private val context: Context) {
 
     suspend fun control(recordId: String, action: String, approval: String = "", allow: Boolean = false) = withContext(Dispatchers.IO) {
         val state = inbox.read(recordId)?.remoteState ?: return@withContext
+        if (action == "stop") inbox.pauseQueuedReplies(recordId)
         publishCommand(recordId, RemoteProtocol.control(state.command, action, approval, allow))
     }
     suspend fun answerInput(recordId: String, inputId: String, answers: Map<String, List<String>>, library: Boolean = false) = withContext(Dispatchers.IO) {
@@ -374,6 +402,7 @@ class RemoteConversationClient(private val context: Context) {
                 delay(15_000)
                 val record = withContext(Dispatchers.IO) { inbox.read(recordId) } ?: break
                 runCatching { ensureConversationWatch(recordId) }
+                drainQueuedReply(recordId)
                 recoverGoal(recordId)
                 val state = record.remoteState
                 record.followUps.filter { FollowUpState.pending(it) &&
@@ -466,6 +495,7 @@ class RemoteConversationClient(private val context: Context) {
                         }
                         ConversationSyncTrace.record("library-before", event.seq, android.os.SystemClock.elapsedRealtime() - started, context)
                         inbox.updateLibrary(recordId, event)
+                        launch { drainQueuedReply(recordId) }
                         ConversationSyncTrace.record("library-applied", event.seq, android.os.SystemClock.elapsedRealtime() - started, context)
                         return@collect
                     }
@@ -503,6 +533,7 @@ class RemoteConversationClient(private val context: Context) {
             }
         }
         missingBase?.let { recoverStream(recordId, it) }
+        drainQueuedReply(recordId)
     }
 
     private suspend fun recoverStream(recordId: String, command: RemoteCommand) {

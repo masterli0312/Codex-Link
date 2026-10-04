@@ -91,4 +91,16 @@ class ConversationTimelineTest {
         assertEquals(2, RemoteActivityRules.merge(listOf(positioned), listOf(positioned.copy(position = -1, detail = "Updated output"))).single().position)
         assertEquals("Updated output", RemoteActivityRules.merge(listOf(positioned), listOf(positioned.copy(position = -1, detail = "Updated output"))).single().detail)
     }
+    @Test fun acceptedInterventionsMoveAboveExecutionOnlyWithinTheirOwnTurn() {
+        val old = message("old","answer",0)
+        val root = TaskConversationMessage("user","Original","turn:u",position = 0)
+        val first = TaskConversationMessage("user","First guide","turn:g1",position = 3)
+        val second = TaskConversationMessage("user","Second guide","turn:g2",position = 5)
+        val timeline = ConversationTimeline.build(listOf(old,root,message("turn","progress",2),first,second),listOf(command("turn","cmd",1)))
+        val ordered = ConversationTimeline.userInputsFirst(timeline,"turn")
+        assertEquals(listOf("old:answer","turn:u","turn:g1","turn:g2"),ordered.take(4).filterIsInstance<ConversationTimelineEntry.Message>().map { it.value.id })
+        assertEquals("activity:turn:cmd",ordered[4].key)
+        assertEquals(2,ConversationTimeline.turnGroups(ordered).size)
+    }
+
 }

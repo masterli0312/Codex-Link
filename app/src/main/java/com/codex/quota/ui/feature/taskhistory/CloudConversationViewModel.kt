@@ -35,6 +35,8 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
     val state = _state.asStateFlow()
     private var selectionJob: Job? = null
     private var refreshJob: Job? = null
+    private var streamJob: Job? = null
+    private var streamOwner: Pair<CloudIdentity, String>? = null
     private var readsEnabled = false
     private var setupPending = false
     init {
@@ -50,6 +52,7 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
         if (_state.value.sending) return
         _state.value.cache?.let { prior -> viewModelScope.launch(ioDispatcher) { store.save(prior) } }
         selectionJob?.cancel(); refreshJob?.cancel(); saveJob?.cancel()
+        streamJob?.cancel(); streamOwner = null
         setupPending = false
         _state.update { CloudUiState(accounts = it.accounts, accountId = id, loading = id.isNotBlank(),
             newTask = it.newTask, managingEnvironments = it.managingEnvironments) }
@@ -78,8 +81,9 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
     }
     fun closeEnvironments() {
         refreshJob?.cancel(); refreshJob = null
-        if(_state.value.editor != null) { _state.update { it.copy(editor = null, loading = false) }; return }
+        if(_state.value.editor != null) { _state.update { it.copy(editor = null, loading = false) }; syncStream(); return }
         _state.update { it.copy(managingEnvironments = false, loading = false) }
+        syncStream()
     }
     fun configureEnvironment() {
         if(_state.value.sending) return
@@ -94,7 +98,7 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
                 loadPreparationModels(identity)
             } catch(e: CancellationException) { throw e }
             catch(e: Exception) { _state.update { it.copy(error = kind(e)) } }
-            finally { _state.update { it.copy(loading = false) } }
+            finally { _state.update { it.copy(loading = false) }; syncStream() }
         }
     }
     fun editEnvironment(id: String) {
@@ -109,6 +113,7 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
                 val session = saved ?: CloudSetupSession(id, threadId = config.threadId,
                     draftId = config.draft?.string("id").orEmpty(), stage = if(config.published && config.draft == null) "published" else "editing")
                 if(_state.value.identity == identity) _state.update { it.copy(editor = editor(config,session)) }
+                syncStream()
                 val repos = runCatching { repository.repositories(identity) }.getOrElse {
                     if(it is CancellationException) throw it; emptyList()
                 }
@@ -119,7 +124,7 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
                 loadPreparationModels(identity)
             } catch(e: CancellationException) { throw e }
             catch(e: Exception) { _state.update { it.copy(error = kind(e)) } }
-            finally { _state.update { it.copy(loading = false) } }
+            finally { _state.update { it.copy(loading = false) }; syncStream() }
         }
     }
     fun editorName(value: String) { _state.update { it.copy(editor = it.editor?.copy(name = value.take(120), dirty = true)) } }
@@ -176,7 +181,14 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
             e.copy(answer = value,answerKey = e.answerKey.ifBlank { UUID.randomUUID().toString() })
         }) }
     }
-    fun sendSetupAnswer() = mutateEditor { identity,e ->
+    fun sendSetupAnswer() {
+        val e = _state.value.editor ?: return
+        if (e.details?.task?.status == "running") {
+            if (queueReply(e.session?.threadId.orEmpty(),e.answer,e.answerKey,e.choice))
+                _state.update { it.copy(editor = it.editor?.copy(answer = "",answerKey = "")) }
+        } else submitSetupAnswer()
+    }
+    private fun submitSetupAnswer() = mutateEditor { identity,e ->
         val threadId = e.session?.threadId ?: return@mutateEditor
         if(!CloudWire.validPrompt(e.answer)) return@mutateEditor
         if(!DurableCloudWire.validChoice(e.choice,e.models)) throw CloudException(CloudErrorKind.RESPONSE)
@@ -193,7 +205,8 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
         val previous = _state.value.editor?.takeIf { it.creating || it.config?.id == config.id }
         return CloudEditorState(
         config = config, name = config.name, install = config.editable.string("install_script"), skill = config.editable.string("start_skill"),
-        network = (config.editable["network_policy"] as? JsonObject)?.string("type") ?: "restricted", session = session, details = details,
+        network = (config.editable["network_policy"] as? JsonObject)?.string("type") ?: "restricted", session = session,
+        details = details?.let { CloudConversationStream.merge(previous?.details,it) } ?: previous?.details,
         repositories = previous?.repositories.orEmpty(),models = previous?.models ?: _state.value.models,choice = previous?.choice ?: _state.value.choice,
         answer = previous?.answer.orEmpty(),answerKey = previous?.answerKey.orEmpty(),
         awaitingTurnId = previous?.awaitingTurnId.orEmpty(),submittedPrompt = previous?.submittedPrompt.orEmpty())
@@ -332,7 +345,7 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
         _state.update { it.copy(loading = false) }
     }
     fun setupUnavailable() { setupPending = false }
-    fun newTask() { refreshJob?.cancel(); _state.update { it.copy(newTask = true, selectedTask = "", loading = false, error = null) } }
+    fun newTask() { refreshJob?.cancel(); _state.update { it.copy(newTask = true, selectedTask = "", loading = false, error = null) }; syncStream() }
     fun backToList() { refreshJob?.cancel(); refreshJob = null; _state.update { it.copy(newTask = false, selectedTask = "", error = null) }; refresh() }
     fun open(id: String) { if (!CloudWire.validId(id)) return; refreshJob?.cancel(); refreshJob = null; _state.update { it.copy(selectedTask = id, newTask = false, error = null,reply = "",replyKey = "",awaitingTurnId = "",submittedPrompt = "") }; refresh() }
     fun replyDraft(value: String) {
@@ -342,6 +355,10 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
         val s = _state.value; val identity = s.identity ?: return
         val details = s.cache?.details?.firstOrNull { it.task.id == s.selectedTask } ?: return
         if(s.sending || !CloudWire.validPrompt(s.reply) || !DurableCloudWire.validChoice(s.choice,s.models)) return
+        if (details.task.status == "running") {
+            if (queueReply(s.selectedTask,s.reply,s.replyKey,s.choice)) _state.update { it.copy(reply = "",replyKey = "") }
+            return
+        }
         refreshJob?.cancel(); _state.update { it.copy(sending = true,error = null) }
         viewModelScope.launch {
             val fp = digest("cloud-reply:${identity.key}:${s.selectedTask}:${s.replyKey}")
@@ -371,6 +388,7 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
     }
     fun refresh(showProgress: Boolean = true) {
         if (!readsEnabled) return
+        syncStream()
         val current = _state.value
         val identity = current.identity
         if (identity == null) {
@@ -386,7 +404,7 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
                     val c = repository.config(identity,session.configId,if(session.explicitDraft && session.stage != "published") session.draftId else "")
                     val rawDetails = session.threadId.takeIf { it.isNotBlank() }?.let { repository.details(identity,it) }
                     val latestEditor = _state.value.editor ?: e
-                    val details = rawDetails?.let { DurableCloudWire.reconcileReply(it,latestEditor.awaitingTurnId,latestEditor.submittedPrompt) }
+                    val details = rawDetails?.let { DurableCloudWire.reconcileReply(CloudConversationStream.merge(latestEditor.details,it),latestEditor.awaitingTurnId,latestEditor.submittedPrompt) }
                     val recoveredThread = session.threadId.ifBlank { c.threadId }
                     val recoveredStage = when {
                         session.stage == "allocating" && recoveredThread.isNotBlank() -> "editing"
@@ -408,7 +426,8 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
                     setupPending = false
                 } else if (current.selectedTask.isNotBlank()) {
                     val rawDetails = repository.details(identity, current.selectedTask)
-                    val details = DurableCloudWire.reconcileReply(rawDetails,current.awaitingTurnId,current.submittedPrompt)
+                    val prior = _state.value.cache?.details?.firstOrNull { it.task.id == current.selectedTask }
+                    val details = DurableCloudWire.reconcileReply(CloudConversationStream.merge(prior,rawDetails),current.awaitingTurnId,current.submittedPrompt)
                     if (_state.value.identity == identity && _state.value.selectedTask == current.selectedTask)
                         _state.update { s -> s.copy(cache = s.cache?.let { it.copy(
                             details = (it.details.filterNot { d -> d.task.id == details.task.id } + details).takeLast(5),
@@ -426,7 +445,7 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
                 _state.value.cache?.takeIf { it.identity == identity }?.let { cache -> withContext(ioDispatcher) { store.save(cache) } }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { if (_state.value.identity == identity) _state.update { it.copy(error = kind(e)) } }
-            finally { if (_state.value.identity == identity) _state.update { it.copy(loading = false) } }
+            finally { if (_state.value.identity == identity) _state.update { it.copy(loading = false) }; syncStream(); drainQueuedReply() }
         }
     }
     fun more() {
@@ -490,6 +509,137 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
     }
     private fun kind(e: Exception) = (e as? CloudException)?.kind ?: CloudErrorKind.RESPONSE
 
+    private fun queuedThread() = _state.value.editor?.session?.threadId ?: _state.value.selectedTask
+    private fun queueReply(thread: String,text: String,key: String,choice: CloudPreparationChoice): Boolean {
+        val s = _state.value
+        if (s.sending || !DurableCloudWire.validId(thread) || !CloudWire.validPrompt(text) ||
+            !DurableCloudWire.validChoice(choice,s.editor?.models ?: s.models) ||
+            s.cache?.pendingReplies?.count { it.threadId == thread } != 0) return false
+        val pending = CloudPendingReply(thread,text,key.ifBlank { UUID.randomUUID().toString() },choice)
+        _state.update { it.copy(cache = it.cache?.copy(pendingReplies = it.cache.pendingReplies + pending)) }
+        persistQueuedCache()
+        return true
+    }
+    private fun persistQueuedCache() {
+        val cache = _state.value.cache ?: return
+        viewModelScope.launch(ioDispatcher) { store.save(cache) }
+    }
+    fun cancelQueuedReply() {
+        if (_state.value.sending) return
+        val thread = queuedThread()
+        _state.update { it.copy(cache = it.cache?.copy(pendingReplies = it.cache.pendingReplies.filterNot { p -> p.threadId == thread })) }
+        persistQueuedCache()
+    }
+    fun editQueuedReply() {
+        val s = _state.value
+        if (s.sending) return
+        val pending = s.cache?.pendingReplies?.firstOrNull { it.threadId == queuedThread() } ?: return
+        if (s.editor != null) editorAnswer(listOf(pending.text,s.editor.answer).filter { it.isNotBlank() }.joinToString("\n"))
+        else replyDraft(listOf(pending.text,s.reply).filter { it.isNotBlank() }.joinToString("\n"))
+        cancelQueuedReply()
+    }
+    fun stop() {
+        val s = _state.value; val identity = s.identity ?: return
+        val thread = queuedThread()
+        val details = s.editor?.details ?: s.cache?.details?.firstOrNull { it.task.id == thread } ?: return
+        if (s.sending || details.task.status != "running" || details.activeTurnId.isBlank()) return
+        _state.update { it.copy(sending = true,cache = it.cache?.copy(pendingReplies = it.cache.pendingReplies.map { p -> if (p.threadId == thread) p.copy(attempted = true) else p })) }
+        persistQueuedCache()
+        viewModelScope.launch {
+            try { repository.stop(identity,thread,details.activeTurnId) }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(error = kind(e)) } }
+            finally { _state.update { it.copy(sending = false) }; refresh(showProgress = false) }
+        }
+    }
+    fun steerQueuedReply() = deliverQueuedReply(steer = true)
+    private fun drainQueuedReply() = deliverQueuedReply(steer = false)
+    private fun deliverQueuedReply(steer: Boolean) {
+        val s = _state.value
+        val identity = s.identity ?: return
+        val thread = queuedThread()
+        val pending = s.cache?.pendingReplies?.firstOrNull { it.threadId == thread } ?: return
+        val details = if (s.editor != null) s.editor.details else s.cache.details.firstOrNull { it.task.id == thread }
+        if (!readsEnabled || s.sending || details == null ||
+            (steer && (details.task.status != "running" || details.activeTurnId.isBlank())) ||
+            (!steer && (details.task.status !in setOf("completed","failed") || pending.attempted))) return
+        _state.update { it.copy(sending = true,error = null,cache = it.cache?.copy(pendingReplies = it.cache.pendingReplies.map { p -> if (p.key == pending.key) p.copy(attempted = true) else p })) }
+        viewModelScope.launch {
+            val fp = digest("cloud-queued:${identity.key}:$thread:${pending.key}")
+            try {
+                withContext(ioDispatcher) { _state.value.cache?.let { store.save(it) } }
+                if (!withContext(ioDispatcher) { store.claim(identity,fp) }) throw CloudException(CloudErrorKind.UNCERTAIN)
+                val turn = try { repository.reply(identity,thread,pending.text,pending.choice,if (steer) details.activeTurnId else "") }
+                catch (e: CloudException) {
+                    if (e.kind != CloudErrorKind.UNCERTAIN) withContext(ioDispatcher) { store.rejected(identity,fp) }
+                    throw e
+                }
+                withContext(ioDispatcher) { store.submitted(identity,fp,turn) }
+                _state.update { current ->
+                    if (current.identity != identity) current else {
+                        val optimistic = CloudMessage("user",pending.text,"$turn:queued-${pending.key}",turn,position = Int.MAX_VALUE)
+                        fun accepted(d: CloudDetails?) = d?.copy(task = d.task.copy(status = "running"),activeTurnId = turn,
+                            latestTurnId = turn,messages = d.messages + optimistic)
+                        current.copy(cache = current.cache?.copy(pendingReplies = current.cache.pendingReplies.filterNot { it.key == pending.key },
+                            details = current.cache.details.map { if (it.task.id == thread) accepted(it)!! else it }),
+                            editor = current.editor?.let { if (it.session?.threadId == thread) it.copy(details = accepted(it.details),awaitingTurnId = turn,submittedPrompt = pending.text) else it },
+                            awaitingTurnId = if (current.selectedTask == thread) turn else current.awaitingTurnId,
+                            submittedPrompt = if (current.selectedTask == thread) pending.text else current.submittedPrompt)
+                    }
+                }
+                persistQueuedCache()
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(error = kind(e)) } }
+            finally { _state.update { it.copy(sending = false) }; refresh(showProgress = false) }
+        }
+    }
+
+    private fun syncStream() {
+        val s = _state.value
+        val identity = s.identity
+        val thread = if (s.editor != null) s.editor.session?.threadId.orEmpty()
+            else s.selectedTask.takeUnless { s.managingEnvironments || s.newTask }.orEmpty()
+        val owner = if (readsEnabled && identity != null && thread.isNotBlank()) identity to thread else null
+        if (owner == streamOwner && streamJob?.isActive == true) return
+        streamJob?.cancel(); streamOwner = owner
+        if (owner == null) return
+        streamJob = viewModelScope.launch {
+            try {
+                repository.watchDetails(owner.first,owner.second).collect { incoming ->
+                    if (!readsEnabled || streamOwner != owner || _state.value.identity != owner.first) return@collect
+                    _state.update { current ->
+                        if (current.editor?.session?.threadId == owner.second) {
+                            val e = current.editor
+                            val details = DurableCloudWire.reconcileReply(CloudConversationStream.merge(e.details,incoming),e.awaitingTurnId,e.submittedPrompt)
+                            current.copy(editor = e.copy(details = details,
+                                awaitingTurnId = if (details.latestTurnId == e.awaitingTurnId) "" else e.awaitingTurnId,
+                                submittedPrompt = if (details.latestTurnId == e.awaitingTurnId) "" else e.submittedPrompt),error = null)
+                        } else if (current.selectedTask == owner.second && !current.managingEnvironments) {
+                            val prior = current.cache?.details?.firstOrNull { it.task.id == owner.second }
+                            val details = DurableCloudWire.reconcileReply(CloudConversationStream.merge(prior,incoming),current.awaitingTurnId,current.submittedPrompt)
+                            current.copy(cache = current.cache?.let { cache -> cache.copy(
+                                details = (cache.details.filterNot { it.task.id == owner.second } + details).takeLast(5),
+                                page = cache.page.copy(items = (cache.page.items.filterNot { it.id == owner.second } + details.task).sortedByDescending { it.updatedAt }),
+                                fetchedAt = System.currentTimeMillis()) },
+                                awaitingTurnId = if (details.latestTurnId == current.awaitingTurnId) "" else current.awaitingTurnId,
+                                submittedPrompt = if (details.latestTurnId == current.awaitingTurnId) "" else current.submittedPrompt,error = null)
+                        } else current
+                    }
+                    saveJob?.cancel()
+                    saveJob = viewModelScope.launch {
+                        delay(300)
+                        _state.value.cache?.takeIf { it.identity == owner.first }?.let { withContext(ioDispatcher) { store.save(it) } }
+                    }
+                    drainQueuedReply()
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) {
+                // HTTP remains the independent fallback. The next refresh reconnects
+                // and hydrates the socket, without replaying any user submission.
+            }
+        }
+    }
+
     fun resumeReads() { readsEnabled = true; refresh() }
-    fun pauseReads() { readsEnabled = false; refreshJob?.cancel() }
+    fun pauseReads() { readsEnabled = false; refreshJob?.cancel(); streamJob?.cancel(); streamOwner = null }
 }

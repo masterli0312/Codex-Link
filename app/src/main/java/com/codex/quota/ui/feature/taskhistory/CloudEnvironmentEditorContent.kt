@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import com.codex.quota.R
 import com.codex.quota.notifications.task.TaskConversationMessage
 import com.codex.quota.notifications.task.RemoteModelOption
+import com.codex.quota.notifications.task.ConversationTimelineEntry
 import com.codex.quota.data.cloud.DurableCloudWire
 
 /** Native configuration and preparation. Browser authorization is not presented as environment creation. */
@@ -25,11 +26,13 @@ internal fun CloudEnvironmentEditorContent(e: CloudEditorState, busy: Boolean, o
     onRepo: (String)->Unit, onInstall: (String)->Unit, onSkill: (String)->Unit, onNetwork: (String)->Unit,
     onCreate: ()->Unit, onPrepare: ()->Unit, onSave: ()->Unit, onPublish: ()->Unit,
     onAnswer: (String)->Unit, onSendAnswer: ()->Unit, onUse: ()->Unit,
-    onModel: (String)->Unit, onEffort: (String)->Unit, onRefreshModels: ()->Unit, modifier: Modifier = Modifier) {
+    onModel: (String)->Unit, onEffort: (String)->Unit, onRefreshModels: ()->Unit, modifier: Modifier = Modifier,
+    queued: com.codex.quota.data.cloud.CloudPendingReply? = null,onQueuedEdit: ()->Unit = {},onQueuedSteer: ()->Unit = {},onQueuedCancel: ()->Unit = {},onStop: ()->Unit = {}) {
     var advanced by rememberSaveable(e.config?.id,e.creating) { mutableStateOf(false) }
     var confirmPreparation by rememberSaveable(e.config?.id,e.creating) { mutableStateOf(false) }
     var modelPicker by remember { mutableStateOf(false) }
     var effortPicker by remember { mutableStateOf(false) }
+    val conversationScroll = rememberCloudConversationScroll(e.session?.threadId.orEmpty(),e.details != null,e.details?.messages?.lastOrNull { it.role == "user" }?.id.orEmpty())
     val selectedModel = e.models.firstOrNull { it.model == e.choice.model }
     val ready = DurableCloudWire.validChoice(e.choice,e.models)
     if(confirmPreparation) AlertDialog(onDismissRequest = { if(!busy) confirmPreparation = false },
@@ -53,7 +56,7 @@ internal fun CloudEnvironmentEditorContent(e: CloudEditorState, busy: Boolean, o
     if(effortPicker) RemoteEffortPicker(selectedModel?.efforts.orEmpty(),e.choice.effort,
         onSelect = { onEffort(it); effortPicker = false },onDismiss = { effortPicker = false })
     Column(modifier.fillMaxWidth().imePadding()) {
-    LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    LazyColumn(Modifier.weight(1f), state = conversationScroll.state, contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
             Text(stringResource(if(e.creating) R.string.cloud_native_create else R.string.cloud_native_configuration), style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.height(6.dp))
@@ -126,15 +129,22 @@ internal fun CloudEnvironmentEditorContent(e: CloudEditorState, busy: Boolean, o
             }
             e.details?.messages?.filterNot { it.role == "user" && it.text.contains("cloud-environment-onboarding:") }?.let { messages ->
                 item { Text(stringResource(R.string.cloud_native_setup_conversation),style = MaterialTheme.typography.titleSmall) }
-                items(messages.size,key = { "setup:$it" }) { index ->
-                    val m=messages[index]; ConversationMessage(TaskConversationMessage(m.role,m.text.take(48000)),showCopy = e.details.task.status != "running")
+                items(com.codex.quota.notifications.task.ConversationTimeline.turnGroups(cloudTranscript(e.details.copy(messages = messages))),
+                    key = { "setup-turn:" + com.codex.quota.notifications.task.ConversationTimeline.turn(it.first()) }) { entries ->
+                    val turn = com.codex.quota.notifications.task.ConversationTimeline.turn(entries.first())
+                    val info = e.details.turns.firstOrNull { it.id == turn }
+                    ConversationTurnBlock(entries,
+                        completed = info?.status?.let { it != "inProgress" } ?: (turn != e.details.latestTurnId || e.details.task.status != "running"),
+                        durationMs = info?.durationMs,onBrowseProcess = conversationScroll.browse)
                 }
             }
         }
     }
-    if(e.session?.threadId?.isNotBlank() == true && !e.creating) CloudMessageComposer(e.answer,onAnswer,onSendAnswer,
-        e.models,e.choice,busy,ready && e.details != null && (e.details.task.status != "running" || e.details.activeTurnId.isNotBlank()),
-        onModel,onEffort,onRefreshModels,running = e.details?.task?.status == "running",
-        modifier = Modifier.padding(horizontal = 20.dp,vertical = 12.dp))
+    if(e.session?.threadId?.isNotBlank() == true && !e.creating) Column(Modifier.padding(horizontal = 20.dp,vertical = 12.dp)) {
+        queued?.let { QueuedMessageChip(it.text,!busy,e.details?.task?.status == "running",onQueuedEdit,onQueuedSteer,onQueuedCancel); Spacer(Modifier.height(10.dp)) }
+        CloudMessageComposer(e.answer,onAnswer,onSendAnswer,
+            e.models,e.choice,busy,queued == null && ready && e.details != null && (e.details.task.status != "running" || e.details.activeTurnId.isNotBlank()),
+            onModel,onEffort,onRefreshModels,running = e.details?.task?.status == "running",onStop = onStop)
+    }
     }
 }

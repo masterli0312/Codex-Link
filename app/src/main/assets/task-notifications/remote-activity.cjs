@@ -6,6 +6,7 @@ function projectItem(turn,item,position=-1){
  const a={id:turn+':'+item.id,turn_id:turn,type:item.type,status:['inProgress','completed','failed','declined'].includes(item.status)?item.status:'completed',title:'',detail:'',files:[],truncated:false};
  if(Number.isSafeInteger(position)&&position>=0)a.position=position;
  if(item.type==='commandExecution'){
+  if(Array.isArray(item.commandActions)&&item.commandActions.length&&item.commandActions.every(x=>x?.type==='read'))a.type='fileRead';
   if(typeof item.command!=='string')return null;
   a.title=limit(item.command,512);a.detail=limit(item.aggregatedOutput,8192);
   if(Number.isInteger(item.exitCode)&&item.exitCode>=-2147483648&&item.exitCode<=2147483647)a.exit_code=item.exitCode;
@@ -46,4 +47,10 @@ function mergeActivities(older=[],newer=[]){
 function projectTurns(turns=[]){
  return mergeActivities([],turns.flatMap(t=>(t.items||[]).map((i,n)=>projectItem(t.id,i,n)).filter(Boolean)));
 }
-module.exports={projectItem,mergeActivities,projectTurns,limit};
+function turnDuration(turn){
+ if(Number.isSafeInteger(turn.durationMs)&&turn.durationMs>=0)return turn.durationMs;
+ const millis=n=>Number.isSafeInteger(n)&&n>0?(n<1e11?n*1000:n):null;
+ const start=millis(turn.startedAt),end=millis(turn.completedAt);
+ return start!==null&&end!==null&&end>=start?end-start:null;
+}
+module.exports={projectItem,mergeActivities,projectTurns,limit,turnDuration};

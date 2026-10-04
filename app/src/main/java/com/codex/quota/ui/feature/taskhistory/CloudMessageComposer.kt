@@ -6,6 +6,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,7 +25,7 @@ import com.codex.quota.notifications.task.RemoteModelOption
 internal fun CloudMessageComposer(text: String, onText: (String)->Unit, onSend: ()->Unit,
     models: List<CloudPreparationModel>, choice: CloudPreparationChoice, busy: Boolean, canSend: Boolean,
     onModel: (String)->Unit, onEffort: (String)->Unit, onRefreshModels: ()->Unit,
-    running: Boolean = false, modifier: Modifier = Modifier) {
+    running: Boolean = false, modifier: Modifier = Modifier,onStop: ()->Unit = {}) {
     var options by remember { mutableStateOf(false) }
     var pickModel by remember { mutableStateOf(false) }
     var pickEffort by remember { mutableStateOf(false) }
@@ -55,11 +56,12 @@ internal fun CloudMessageComposer(text: String, onText: (String)->Unit, onSend: 
                         }
                     }
                     VoiceInputButton(enabled = !busy,onResult = { onText(listOf(text,it).filter { s -> s.isNotBlank() }.joinToString(" ")) },onError = { voiceError = it },onListening = {})
-                    FilledIconButton(onClick = onSend,enabled = !busy && canSend && CloudWire.validPrompt(text),
+                    val stopping = running && text.isBlank()
+                    FilledIconButton(onClick = if (stopping) onStop else onSend,enabled = !busy && (stopping || canSend && CloudWire.validPrompt(text)),
                         modifier = Modifier.size(42.dp).testTag("cloud-message-send"),shape = CircleShape,
                         colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.onSurface,contentColor = MaterialTheme.colorScheme.surface)) {
                         if(busy) CircularProgressIndicator(Modifier.size(18.dp),strokeWidth = 2.dp,color = MaterialTheme.colorScheme.surface)
-                        else Icon(Icons.Filled.ArrowUpward,stringResource(R.string.remote_send),Modifier.size(22.dp))
+                        else Icon(if (stopping) Icons.Filled.Stop else Icons.Filled.ArrowUpward,stringResource(if (stopping) R.string.remote_stop else R.string.remote_send),Modifier.size(22.dp))
                     }
                 }
             }

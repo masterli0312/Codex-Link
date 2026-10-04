@@ -10,7 +10,7 @@ import kotlinx.serialization.json.Json
 
 @Serializable
 data class TaskConversationMessage(val role: String, val text: String, val id: String = "", val position: Int = -1,
-    val images: List<ConversationImageRef> = emptyList())
+    val images: List<ConversationImageRef> = emptyList(),val phase: String = "")
 
 @Serializable
 data class ConversationImageRef(val id: String)
@@ -33,7 +33,7 @@ data class TaskConversationSnapshot(
     val remote_ref: RemoteThreadRef? = null,
     val history_cursor: String = "",
     val activities: List<RemoteActivity> = emptyList(), val running: Boolean = false,
-    val thread_ref: RemoteThreadRef? = null
+    val thread_ref: RemoteThreadRef? = null, val turn_durations: Map<String,Long> = emptyMap()
 )
 
 /** Independent pairing encryption. Never uses OpenAI credentials. IV(12) + ciphertext + GCM tag(16). */

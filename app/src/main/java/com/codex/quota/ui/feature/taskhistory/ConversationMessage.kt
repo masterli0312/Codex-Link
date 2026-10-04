@@ -6,11 +6,13 @@ import android.content.Context
 import android.os.Build
 import android.os.PersistableBundle
 import android.widget.TextView
+import android.view.ViewGroup
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,16 +34,30 @@ import io.noties.markwon.ext.tables.TablePlugin
 internal fun ConversationMessage(message: TaskConversationMessage, showCopy: Boolean = true, recordId: String? = null) {
     if (message.role == "user") {
         val displayText = remember(message.text) { ConversationDisplayText.userText(message.text) }
-        if (displayText.isBlank() && message.images.isEmpty()) return
+        val attachmentNames = remember(message.text) { ConversationDisplayText.attachmentNames(message.text) }
+        if (displayText.isBlank() && message.images.isEmpty() && attachmentNames.isEmpty()) return
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
-            Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surfaceContainer,
-                modifier = Modifier.widthIn(max = 320.dp).padding(start = 28.dp)) {
-                Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (displayText.isNotBlank()) SelectionContainer { Text(displayText, style = MaterialTheme.typography.bodyLarge) }
-                    message.images.chunked(2).forEach { row ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            row.forEach { image -> key(image.id) { ConversationImage(image, recordId, compact = true) } }
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (message.images.isEmpty()) attachmentNames.forEach { name ->
+                    Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                        Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Outlined.Image, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(name, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
                         }
+                    }
+                }
+                if (displayText.isNotBlank()) {
+                    Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.widthIn(max = 320.dp).padding(start = 28.dp)) {
+                        Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+                            SelectionContainer { Text(displayText, style = MaterialTheme.typography.bodyLarge) }
+                        }
+                    }
+                }
+                message.images.chunked(2).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        row.forEach { image -> key(image.id) { ConversationImage(image, recordId, compact = true) } }
                     }
                 }
             }
@@ -55,7 +71,7 @@ internal fun ConversationMessage(message: TaskConversationMessage, showCopy: Boo
                     row.forEach { image -> key(image.id) { ConversationImage(image, recordId) } }
                 }
             }
-            if (showCopy) {
+            if (showCopy && message.text.isNotBlank()) {
                 var copied by remember(message.text) { mutableStateOf(false) }
                 IconButton(modifier = Modifier.size(32.dp), onClick = {
                     val clip = ClipData.newPlainText(context.getString(R.string.task_history_latest_reply), message.text)
@@ -84,11 +100,16 @@ private fun MarkdownReply(text: String) {
         }).build()
     }
     AndroidView(modifier = Modifier.fillMaxWidth(), factory = { TextView(it).apply {
+        layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         textSize = 17f; setTextIsSelectable(true); setPadding(0, 0, 0, 0)
         setLineSpacing(4 * resources.displayMetrics.density, 1.15f)
     } }, update = { view ->
         view.setTextColor(colors.onSurface.toArgb())
         val presentation = text to colors
-        if (view.tag != presentation) { markwon.setMarkdown(view, text); view.tag = presentation }
+        if (view.tag != presentation) {
+            markwon.setMarkdown(view, text)
+            view.tag = presentation
+            view.requestLayout()
+        }
     })
 }

@@ -13,6 +13,21 @@ sealed interface ConversationTimelineEntry {
 
 /** Use native within-turn positions, never receipt times, to interleave visible items. */
 object ConversationTimeline {
+    fun turn(entry: ConversationTimelineEntry): String = when(entry) {
+        is ConversationTimelineEntry.Message -> entry.value.id.substringBefore(':', "")
+        is ConversationTimelineEntry.Activity -> entry.value.turn_id
+        is ConversationTimelineEntry.ActivityGroup -> entry.values.first().turn_id
+    }
+    fun turnGroups(entries: List<ConversationTimelineEntry>): List<List<ConversationTimelineEntry>> =
+        entries.groupBy { turn(it) }.values.toList()
+    /** Accepted interventions join the latest turn's input; its execution follows below. */
+    fun userInputsFirst(entries: List<ConversationTimelineEntry>, turn: String): List<ConversationTimelineEntry> {
+        if (turn.isBlank()) return entries
+        val input = entries.filter { it is ConversationTimelineEntry.Message && it.value.role == "user" && it.value.id.substringBefore(':', "") == turn }
+        if (input.size < 2) return entries
+        val first = entries.indexOfFirst { it in input }
+        return entries.take(first) + input + entries.drop(first).filterNot { it in input }
+    }
     /** A terminal phone task is not the status of a later desktop turn. Keep active interactions and downloads. */
     fun showsTaskStatus(snapshot: TaskConversationSnapshot, state: RemoteConversationState?): Boolean {
         state ?: return false

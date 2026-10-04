@@ -8,7 +8,7 @@ const optionsProtocol=require('./remote-options.cjs');
 const uploads=require('./remote-attachments.cjs');
 const images=require('./conversation-images.cjs');
 const {LIVE_FLUSH_MS,WATCH_POLL_MS}=require('./remote-stream.cjs');
-const {LiveWatch,liveTail}=require('./live-watch.cjs');
+const {LiveWatch,liveTail,reconcileSnapshot}=require('./live-watch.cjs');
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid=value=>typeof value==='string'&&UUID.test(value);
 const hash=s=>crypto.createHash('sha256').update(s).digest('hex');
@@ -217,22 +217,24 @@ class RemoteController{
       // Native events supply the live tail. A slower reconciliation is retained for
       // missed notifications; a persistence read must never overwrite newer deltas.
       const settling=w.live?.value.running&&['idle','notLoaded'].includes(meta.status?.type);
-      const reconcileMs=settling?2000:60000;
+      const reconcileMs=settling||w.live?.value.running?2000:15000;
       if(w.live&&Date.now()-w.lastRead<reconcileMs)return;
       const local=this.readRevision?.(w.c.read_thread_id)||'';
       const revision=JSON.stringify([meta.updatedAt,meta.name,meta.title,meta.status?.type,local]);
       if(revision===w.revision&&Date.now()-w.lastRead<reconcileMs)return;
       const live=w.live,version=live?.version;
-      const snapshot=await library.readSnapshot(w.client,w.c.read_thread_id,this.hostId,this.readLocal,meta);
+      let snapshot=await library.readSnapshot(w.client,w.c.read_thread_id,this.hostId,this.readLocal,meta);
       if(this.watching!==w)return;
       w.revision=revision;w.lastRead=Date.now();
-      const confirmsTerminal=settling&&!snapshot.running&&snapshot.remote_ref?.baseline_turn===live?.turn&&
-        snapshot.remote_ref?.host_id===this.hostId&&snapshot.remote_ref?.thread_id===w.c.read_thread_id;
-      if(live&&(live.version!==version||live.value.running&&!confirmsTerminal||
-        live.version>0&&snapshot.remote_ref?.baseline_turn!==live.turn))return;
+      if(live){
+        if(live.version!==version)return;
+        snapshot=reconcileSnapshot(live,snapshot);
+        if(!snapshot)return;
+      }
       await this.emitWatch(w,snapshot);
       if(w.client.supportsLiveWatch){
         w.live=new LiveWatch(w.c.read_thread_id,this.hostId,snapshot,meta.cwd);
+        if(live?.turn===w.live.turn)w.live.startedAt=live.startedAt;
         if(!live){
           // Public thread/resume subscribes this socket to the SAME loaded thread.
           // In particular do not use client.resume(), which applies execution settings.

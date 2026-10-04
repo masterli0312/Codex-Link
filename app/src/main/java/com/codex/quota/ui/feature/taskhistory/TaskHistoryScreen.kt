@@ -493,25 +493,30 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
     val nativeReplyVisible = state != null && current != null && ConversationSnapshotRules.hasNativeReply(current, state)
     val showLive = state != null && taskIsCurrent && !nativeReplyVisible &&
         (state.event?.status !in setOf("completed", "interrupted", "failed") || state.event?.attachment_pending == true) && state.event?.goal_waiting != true
-    val messages = remember(current?.historyMessages, current?.snapshot?.messages, current?.snapshot?.reply) {
+    val messages = remember(current?.historyMessages, current?.snapshot?.messages, current?.snapshot?.reply,current?.followUps) {
         val values = ConversationHistory.merge(current?.historyMessages.orEmpty(), current?.snapshot?.messages.orEmpty())
-        if (values.isEmpty() && !current?.snapshot?.reply.isNullOrBlank()) listOf(TaskConversationMessage("assistant", current!!.snapshot.reply)) else values
+        val persisted = if (values.isEmpty() && !current?.snapshot?.reply.isNullOrBlank()) listOf(TaskConversationMessage("assistant", current!!.snapshot.reply)) else values
+        val turn = (current?.snapshot?.thread_ref ?: current?.snapshot?.remote_ref)?.baseline_turn.orEmpty()
+        val accepted = current?.followUps.orEmpty().filter { it.event?.status == "steered" && it.event.turn_id == turn &&
+            persisted.none { m -> m.role == "user" && ConversationDisplayText.userText(m.text) == it.command.text } }
+            .map { TaskConversationMessage("user",it.command.text,"$turn:steer-${it.command.id}",position = Int.MAX_VALUE) }
+        persisted + accepted
     }
     val timeline = remember(messages, current?.activities, current?.snapshot?.activities, state?.event?.activities, showLive, continuityTurn) {
         val turn = state?.event?.turn_id.orEmpty()
-        val persisted = if (showLive && turn.isNotBlank()) messages.filterNot { it.id.substringBefore(':') == turn } else messages
-        ConversationActivityGroups.present(ConversationTimeline.build(persisted, RemoteActivityRules.merge(RemoteActivityRules.merge(current?.activities.orEmpty(), current?.snapshot?.activities.orEmpty()), state?.event?.activities.orEmpty()), continuityTurn))
+        val persisted = if (showLive && state != null) ConversationHistory.withLiveInput(messages,state,current?.followUps.orEmpty()) else messages
+        ConversationActivityGroups.present(ConversationTimeline.userInputsFirst(ConversationTimeline.build(persisted, RemoteActivityRules.merge(RemoteActivityRules.merge(current?.activities.orEmpty(), current?.snapshot?.activities.orEmpty()), state?.event?.activities.orEmpty()), continuityTurn),
+            if (showLive) turn.ifBlank { continuityTurn } else (current?.snapshot?.thread_ref ?: current?.snapshot?.remote_ref)?.baseline_turn.orEmpty()))
     }
     val loadEarlier = canConnect && current != null && !current.libraryAnchor && current.historyCursor != "" && !operationPending
     val limitedHistory = current?.historyLimited == true
     val previewOnly = current?.hasFullSnapshot == false && !awaitingRemoteContent
-    val liveInput = if (showLive && state != null) ConversationHistory.activeInput(state, current?.followUps.orEmpty()) else ""
-    val liveReply = if (showLive) state?.event?.reply.orEmpty() else ""
     val taskStatus = state != null && current != null && taskIsCurrent && ConversationTimeline.showsTaskStatus(current.snapshot, state)
     val desktopRunning = current?.snapshot?.running == true && state == null
     val emptyTimeline = timeline.isEmpty() && !showLive && loaded && !awaitingRemoteContent
-    val itemCount = timeline.size + listOf(loadEarlier, limitedHistory, previewOnly,
-        liveInput.isNotBlank(), liveReply.isNotBlank(), taskStatus, desktopRunning, emptyTimeline).count { it }
+    val timelineGroups = remember(timeline) { ConversationTimeline.turnGroups(timeline) }
+    val itemCount = timelineGroups.size + listOf(loadEarlier, limitedHistory, previewOnly,
+        taskStatus, desktopRunning, emptyTimeline).count { it }
     val expectedItemCount by rememberUpdatedState(itemCount)
     val listState = rememberLazyListState()
     var positioned by remember(id) { mutableStateOf(false) }
@@ -545,6 +550,13 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
             // briefly displaying the top/old restored scroll position.
             listState.scrollToItem(itemCount - 1, Int.MAX_VALUE)
             positioned = true
+        }
+    }
+    val acceptedGuidance = current?.followUps?.lastOrNull { it.event?.status == "steered" }?.command?.id.orEmpty()
+    LaunchedEffect(acceptedGuidance,contentReady) {
+        if (acceptedGuidance.isNotBlank() && contentReady && itemCount > 0) {
+            listState.scrollToItem(itemCount-1,Int.MAX_VALUE)
+            followLatest = true
         }
     }
     LaunchedEffect(listState, id) {
@@ -591,16 +603,12 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
                         if (downloadError) Text(stringResource(R.string.task_history_download_failed), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                         if (!current.attachmentUrl.isNullOrBlank() && current.attachmentExpiresAt > clock) TextButton(onClick = ::download, enabled = !downloading) { Text(stringResource(R.string.task_history_retry)) }
                     }
-                    items(timeline, key = { it.key }) { entry -> when (entry) {
-                        is ConversationTimelineEntry.Message -> ConversationMessage(entry.value, recordId = current?.id,
-                            showCopy = current?.snapshot?.running != true || entry.value.id.substringBefore(':', "") !=
-                                (current.snapshot.thread_ref ?: current.snapshot.remote_ref)?.baseline_turn)
-                        is ConversationTimelineEntry.Activity -> RemoteActivityInline(entry.value)
-                        is ConversationTimelineEntry.ActivityGroup -> RemoteActivityGroupInline(entry.values)
-                    } }
-                    if (showLive && state != null) {
-                        if (liveInput.isNotBlank()) item(ConversationTimeline.liveUserKey(continuityTurn)) { ConversationMessage(TaskConversationMessage("user", liveInput)) }
-                        if (liveReply.isNotBlank()) item(ConversationTimeline.liveReplyKey(continuityTurn)) { ConversationMessage(TaskConversationMessage("assistant", liveReply), showCopy = false) }
+                    items(timelineGroups, key = { "turn:" + ConversationTimeline.turn(it.first()) }) { entries ->
+                        val turn = ConversationTimeline.turn(entries.first())
+                        val activeTurn = if (showLive) continuityTurn else (current?.snapshot?.thread_ref ?: current?.snapshot?.remote_ref)?.baseline_turn.orEmpty()
+                        ConversationTurnBlock(entries,
+                            completed = turn != activeTurn || current?.snapshot?.running != true && !showLive,
+                            durationMs = current?.snapshot?.turn_durations?.get(turn),recordId = current?.id,onBrowseProcess = { followLatest = false })
                     }
                     if (taskStatus && state != null)
                         item("task-state") { RemoteStatusPanel(activeId, state, canConnect) }

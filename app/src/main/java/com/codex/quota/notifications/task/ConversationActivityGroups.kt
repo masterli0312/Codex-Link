@@ -22,7 +22,7 @@ object ConversationActivityGroups {
         var index = 0
         while (index < entries.size) {
             val first = (entries[index] as? ConversationTimelineEntry.Activity)?.value
-            if (first == null || first.type !in setOf("commandExecution", "fileChange", "mcpToolCall") ||
+            if (first == null || first.type !in setOf("commandExecution", "fileRead", "fileChange", "mcpToolCall") ||
                 first.type == "mcpToolCall" && tool(first) == null) {
                 result += entries[index++]
                 continue

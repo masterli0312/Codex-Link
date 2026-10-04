@@ -52,3 +52,27 @@ test('live tail avoids retransmitting old messages while preserving native ident
  w.apply('turn/completed',event({turn:{id:'new',status:'completed'}}));
  assert.equal(liveTail(w.value).remote_ref.baseline_turn,'new');
 });
+
+test('active reconciliation recovers missing items without replacing newer streamed text',()=>{
+ const {reconcileSnapshot}=require('../../app/src/main/assets/task-notifications/live-watch.cjs');
+ const w=fixture();w.apply('turn/started',event({turn:{id:'new'}}));
+ w.apply('item/started',event({item:{id:'a',type:'agentMessage',phase:'commentary',text:'Checking everything'}}));
+ const saved=snapshot({id:thread,turns:[{id:'new',status:'inProgress',items:[
+  {id:'a',type:'agentMessage',phase:'commentary',text:'Checking'},
+  {id:'missed',type:'commandExecution',command:'test',status:'completed',aggregatedOutput:'OK'}]}]},host);
+ const recovered=reconcileSnapshot(w,saved);
+ assert.equal(recovered.running,true);assert.equal(recovered.messages.at(-1).text,'Checking everything');
+ assert.equal(recovered.messages.at(-1).phase,'commentary');assert.equal(recovered.activities.at(-1).id,'new:missed');
+ w.apply('turn/completed',event({turn:{id:'new',status:'completed',durationMs:0}}));
+ const terminal=reconcileSnapshot(w,saved);
+ assert.equal(terminal.running,false);assert.equal(terminal.turn_durations.new,0);
+ assert.equal(reconcileSnapshot(w,{...saved,thread_ref:{...saved.thread_ref,thread_id:'other'}}),null);
+});
+test('reconciliation accepts a missed new turn and rejects a known historical turn',()=>{
+ const {reconcileSnapshot}=require('../../app/src/main/assets/task-notifications/live-watch.cjs');
+ const w=fixture();
+ const saved=snapshot({id:thread,updatedAt:2000,turns:[{id:'missed',status:'inProgress',items:[{id:'a',type:'agentMessage',text:'Latest'}]}]},host);
+ assert.equal(reconcileSnapshot(w,saved).thread_ref.baseline_turn,'missed');
+ w.apply('turn/started',event({turn:{id:'new'}}));
+ assert.equal(reconcileSnapshot(w,fixture().value),null);
+});

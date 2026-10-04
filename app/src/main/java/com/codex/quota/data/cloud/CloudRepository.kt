@@ -7,6 +7,8 @@ import com.codex.quota.domain.repository.CodexAccountRepository
 import kotlinx.serialization.json.*
 import com.codex.quota.data.cloud.DurableCloudWire.string
 import com.codex.quota.data.cloud.DurableCloudWire.array
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 
 class CloudRepository(private val accounts: CodexAccountRepository, private val tokens: AccountAccessTokenProvider,
     private val api: CloudApi = CloudApi(), private val durable: DurableCloudApi = DurableCloudApi()) {
@@ -50,6 +52,21 @@ class CloudRepository(private val accounts: CodexAccountRepository, private val 
         val thread = durable.get(token, identity.workspaceId, listOf("v1", "threads", id))["thread"]!!.jsonObject
         val turns = durable.get(token, identity.workspaceId, listOf("v2", "threads", id, "turns"), mapOf("limit" to "20", "itemsView" to "full", "sortDirection" to "desc"))
         DurableCloudWire.details(thread, turns)
+    }
+    fun watchDetails(identity: CloudIdentity, id: String): Flow<CloudDetails> = flow {
+        require(DurableCloudWire.validId(id))
+        val socket = CloudRpc(checkedToken(identity), identity.workspaceId)
+        try {
+            socket.initialize()
+            val thread = socket.request("thread/resume", buildJsonObject {
+                put("threadId", id); put("excludeTurns", false)
+            }, mutation = false)["thread"] as? JsonObject ?: throw CloudException(CloudErrorKind.RESPONSE)
+            if (thread.string("id") != id) throw CloudException(CloudErrorKind.RESPONSE)
+            val projection = CloudConversationStream(thread)
+            emit(projection.details())
+            for (event in socket.events) projection.apply(event)?.let { emit(it) }
+            throw CloudException(CloudErrorKind.NETWORK)
+        } finally { socket.close() }
     }
     suspend fun create(identity: CloudIdentity, environment: String, branch: String, prompt: String): String {
         // Branch belongs to the published config. Never pass a config ID into legacy POST tasks.
@@ -120,6 +137,10 @@ class CloudRepository(private val accounts: CodexAccountRepository, private val 
         if(active && !DurableCloudWire.validId(expectedTurnId)) throw CloudException(CloudErrorKind.RESPONSE)
         val (method,params) = DurableCloudWire.replyRequest(threadId,prompt,choice,active,expectedTurnId)
         DurableCloudWire.replyTurnId(socket.request(method,params))
+    }
+    suspend fun stop(identity: CloudIdentity,threadId: String,turnId: String) = rpc(identity) { socket ->
+        require(DurableCloudWire.validId(threadId) && DurableCloudWire.validId(turnId))
+        socket.request("turn/interrupt",buildJsonObject { put("threadId",threadId); put("turnId",turnId) })
     }
     private suspend fun <T> rpc(identity: CloudIdentity, block: suspend (CloudRpc) -> T): T {
         val socket = CloudRpc(checkedToken(identity), identity.workspaceId)

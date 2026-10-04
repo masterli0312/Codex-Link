@@ -85,13 +85,31 @@ fun CodexQuotaTheme(
     }
 
     val context = LocalContext.current
-    val colorScheme = when {
+    val baseScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
         darkTheme -> DarkColorScheme
         else -> LightColorScheme
     }
+    // Wallpaper accents still color actions, but never tint reading surfaces.
+    val colorScheme = if (darkTheme) baseScheme.copy(
+        background = Color(0xFF121212), surface = Color(0xFF1B1B1B), surfaceTint = Color.Transparent,
+        surfaceDim = Color(0xFF121212), surfaceBright = Color(0xFF333333),
+        surfaceContainerLowest = Color(0xFF1B1B1B), surfaceContainerLow = Color(0xFF202020),
+        surfaceContainer = Color(0xFF262626), surfaceContainerHigh = Color(0xFF2C2C2C),
+        surfaceContainerHighest = Color(0xFF333333), surfaceVariant = Color(0xFF262626),
+        onSurface = Color(0xFFF2F2F2), onBackground = Color(0xFFF2F2F2),
+        onSurfaceVariant = Color(0xFFAAAAAA), outline = Color(0xFF555555), outlineVariant = Color(0xFF363636)
+    ) else baseScheme.copy(
+        background = Color(0xFFF7F7F7), surface = Color.White, surfaceTint = Color.Transparent,
+        surfaceDim = Color(0xFFEEEEEE), surfaceBright = Color.White,
+        surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFFAFAFA),
+        surfaceContainer = Color(0xFFEEEEEE), surfaceContainerHigh = Color(0xFFE8E8E8),
+        surfaceContainerHighest = Color(0xFFE2E2E2), surfaceVariant = Color(0xFFEEEEEE),
+        onSurface = Color(0xFF171717), onBackground = Color(0xFF171717),
+        onSurfaceVariant = Color(0xFF737373), outline = Color(0xFFD4D4D4), outlineVariant = Color(0xFFE8E8E8)
+    )
 
     MaterialTheme(
         colorScheme = colorScheme,

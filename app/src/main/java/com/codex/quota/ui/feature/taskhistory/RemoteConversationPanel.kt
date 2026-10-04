@@ -145,7 +145,7 @@ internal fun RemoteComposer(id: String, record: TaskInboxRecord, onFork: () -> U
     var unreachable by remember { mutableStateOf(false) }
     var preparationError by remember { mutableStateOf<Int?>(null) }
     var stopping by remember { mutableStateOf(false) }
-    var followMode by rememberSaveable(preferenceId) { mutableStateOf("steer") }
+    var followMode by rememberSaveable(preferenceId) { mutableStateOf("queue") }
     var followMenu by remember { mutableStateOf(false) }
     val goalTask = state?.command?.action in RemoteGoalRules.rootActions
     LaunchedEffect(goalTask) { if (goalTask) followMode = "steer" }
@@ -236,7 +236,7 @@ internal fun RemoteComposer(id: String, record: TaskInboxRecord, onFork: () -> U
         val sendingSkills = selectedSkills
         sending = true; error = false; unreachable = false; preparationError = null
         scope.launch {
-            try { if (running) client.followUp(id, if (desktopTurn) "steer" else followMode, prompt) else client.send(id, prompt, model, effort, mode, sendingFiles, sendingSkills); files = emptyList(); selectedSkills = emptyList(); if (text == prompt || text.isBlank()) { text = ""; preferences.updateAsync(record.endpointHash, preferenceId) { it.copy(draft = "") }.await() } }
+            try { if (running) if (goalTask) client.followUp(id,"steer",prompt) else client.queueReply(id,prompt) else client.send(id, prompt, model, effort, mode, sendingFiles, sendingSkills); files = emptyList(); selectedSkills = emptyList(); if (text == prompt || text.isBlank()) { text = ""; preferences.updateAsync(record.endpointHash, preferenceId) { it.copy(draft = "") }.await() } }
             catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
             catch (e: Exception) {
                 error = true; unreachable = e.message == "COMPUTER_UNREACHABLE"
@@ -249,48 +249,57 @@ internal fun RemoteComposer(id: String, record: TaskInboxRecord, onFork: () -> U
     Column(Modifier.fillMaxWidth().imePadding().padding(horizontal = 12.dp, vertical = 10.dp)) {
         if (record.snapshot.running && !running) Text(stringResource(R.string.remote_busy),
             Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        record.followUps.filter { FollowUpState.visible(it) && (it.command.queue_id.isBlank() || it.command.action != "steer") }.takeLast(4).forEach { entry ->
-            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(entry.command.text, Modifier.weight(1f), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (FollowUpState.queued(entry) && running && !desktopTurn) Row {
-                    TextButton(onClick = { if (!sending) { sending = true; scope.launch {
-                        try { client.steerQueued(id, entry.command.id); error = false }
+        record.localQueuedReplies.forEach { entry ->
+            key(entry.id) {
+                QueuedMessageChip(entry.text,!sending && record.followUps.none { it.command.id == entry.id && FollowUpState.pending(it) },running,
+                    onEdit = { sending = true; scope.launch {
+                        try { client.cancelQueuedReply(id,entry.id); text = listOf(entry.text,text).filter { it.isNotBlank() }.joinToString("\n"); error = false }
                         catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                         catch (_: Exception) { error = true }
                         finally { sending = false }
-                    } } }, enabled = !sending) { Text(stringResource(R.string.remote_steer_send)) }
-                    TextButton(onClick = { scope.launch {
-                        error = runCatching { client.followUp(id, "cancel_queue", queueId = entry.command.id) }.isFailure
-                    } }, enabled = !sending) { Text(stringResource(R.string.action_cancel)) }
-                }
-                else if (FollowUpState.recoverable(entry)) TextButton(onClick = {
-                    if (text.isBlank()) text = entry.command.text
-                }, enabled = text.isBlank()) { Text(stringResource(R.string.remote_restore_draft)) }
-                else Text(stringResource(if (entry.event?.status == "queued") R.string.remote_queued else R.string.remote_waiting),
-                    style = MaterialTheme.typography.labelSmall)
-            }
-        }
-        if (running && !goalTask && !desktopTurn) Box {
-            TextButton(onClick = { followMenu = true }) { Text(stringResource(if (followMode == "queue") R.string.remote_queue_send else R.string.remote_steer_send)) }
-            DropdownMenu(followMenu, { followMenu = false }) {
-                listOf("queue", "steer").forEach { mode -> DropdownMenuItem(text = {
-                    Text(stringResource(if (mode == "queue") R.string.remote_queue_send else R.string.remote_steer_send))
-                }, onClick = {
-                    followMode = mode; followMenu = false
-                    // Choosing immediate adjustment also applies the one existing queued message.
-                    val queued = record.followUps.filter { FollowUpState.queued(it) }.singleOrNull()
-                    if (mode == "steer" && queued != null && !sending) { sending = true; scope.launch {
-                        try { client.steerQueued(id, queued.command.id); error = false }
+                    } },
+                    onSteer = { sending = true; scope.launch {
+                        try { client.steerLocalReply(id,entry.id); error = false }
                         catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                         catch (_: Exception) { error = true }
                         finally { sending = false }
-                    } }
-                }) }
+                    } },
+                    onCancel = { sending = true; scope.launch {
+                        try { client.cancelQueuedReply(id,entry.id); error = false }
+                        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                        catch (_: Exception) { error = true }
+                        finally { sending = false }
+                    } })
+                Spacer(Modifier.height(8.dp))
             }
         }
-        Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerLow,
-            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+        record.followUps.filter { FollowUpState.visible(it) && it.command.id !in record.localQueuedReplies.map { p -> p.id } &&
+            (it.command.queue_id.isBlank() || it.command.action != "steer") }.takeLast(4).forEach { entry ->
+            if (FollowUpState.queued(entry)) QueuedMessageChip(entry.command.text,!sending,running && !desktopTurn,
+                onEdit = { sending = true; scope.launch {
+                    try { client.followUp(id,"cancel_queue",queueId = entry.command.id); text = listOf(entry.command.text,text).filter { it.isNotBlank() }.joinToString("\n") }
+                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (_: Exception) { error = true }
+                    finally { sending = false }
+                } },
+                onSteer = { sending = true; scope.launch {
+                    try { client.steerQueued(id,entry.command.id); error = false }
+                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (_: Exception) { error = true }
+                    finally { sending = false }
+                } },
+                onCancel = { scope.launch {
+                    try { client.followUp(id,"cancel_queue",queueId = entry.command.id) }
+                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (_: Exception) { error = true }
+                } })
+            else Row(Modifier.fillMaxWidth(),verticalAlignment = Alignment.CenterVertically) {
+                Text(entry.command.text,Modifier.weight(1f),maxLines = 1,overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (FollowUpState.recoverable(entry)) TextButton(onClick = { text = listOf(entry.command.text,text).filter { it.isNotBlank() }.joinToString("\n") }) { Text(stringResource(R.string.remote_restore_draft)) }
+            }
+        }
+        Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerLowest) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             attachmentError?.let { Text(stringResource(when (it) {
                 "ATTACHMENT_TOO_LARGE" -> R.string.remote_attachment_too_large

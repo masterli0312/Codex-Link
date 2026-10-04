@@ -21,6 +21,15 @@ function projectImages(thread,item,cwd=''){
   const value=register(thread,c.type==='localImage'?c.path:c.url||(c.fileId?'official-file:'+c.fileId:''));
   if(value)images.push(value);if(images.length===3)break;
  }
+ if(item.type==='userMessage'&&images.length<3)for(const c of item.content||[]){
+  if(c?.type!=='text'||typeof c.text!=='string'||!c.text.trimStart().startsWith('# Files mentioned by the user:'))continue;
+  const wrapper=c.text.split(/^## My request(?: for Codex)?:/m)[0];
+  for(const match of wrapper.matchAll(/^## [^\r\n:]+:\s+([^\r\n]+)$/gm)){
+   const source=match[1].trim();
+   if(!/[/\\]codex-remote-attachments[/\\]/.test(source)||!(/\.(?:png|jpe?g|webp|gif)$/i.test(source)))continue;
+   const value=register(thread,source);if(value)images.push(value);if(images.length===3)break;
+  }
+ }
  if(item.type==='imageGeneration'&&item.status==='completed'){
   const source=item.savedPath||(typeof item.result==='string'&&item.result?
    (item.result.startsWith('data:')?item.result:'data:image/png;base64,'+item.result):'');

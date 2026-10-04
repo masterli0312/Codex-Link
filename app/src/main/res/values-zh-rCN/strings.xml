@@ -560,6 +560,11 @@
     <string name="remote_queue_send">完成后发送</string>
     <string name="remote_steer_send">调整当前任务</string>
     <string name="remote_queued">已排队</string>
+    <string name="conversation_edit_queued">编辑消息</string>
+    <string name="remote_activity_read">文件读取</string>
+    <string name="conversation_elapsed">用时 %1$d 分 %2$d 秒</string>
+    <string name="conversation_steer_queued">改为引导</string>
+    <string name="conversation_cancel_queued">取消消息发送</string>
     <string name="remote_restore_draft">恢复到草稿</string>
     <string name="conversation_projects">项目</string>
     <string name="conversation_chat">聊天</string>
@@ -597,10 +602,10 @@
     <string name="remote_command_approval">命令执行审批</string>
     <string name="remote_file_approval">文件修改审批</string>
     <string name="remote_approval_desktop_required">手机无法授予持续访问权限。请拒绝此请求后，在电脑上执行所需操作。</string>
-    <string name="remote_activity_title">任务动态</string>
+    <string name="remote_activity_title">执行过程</string>
     <string name="remote_activity_all">查看全部（%1$d）</string>
     <string name="remote_activity_command">命令执行</string>
-    <string name="remote_activity_files">文件修改</string>
+    <string name="remote_activity_files">文件更改</string>
     <string name="remote_activity_tool">工具调用</string>
     <string name="remote_activity_plan">计划</string>
     <string name="remote_activity_compaction">上下文压缩</string>

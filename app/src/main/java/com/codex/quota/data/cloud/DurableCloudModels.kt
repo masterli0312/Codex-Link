@@ -66,16 +66,21 @@ object DurableCloudWire {
     }
     fun details(thread: JsonObject, turns: JsonObject): CloudDetails {
         val messages = mutableListOf<CloudMessage>()
+        val activities = mutableListOf<com.codex.quota.notifications.task.RemoteActivity>()
         val rows = turns.array("data").reversed()
         for (row in rows) {
             val turn = row.jsonObject
             require(turn.string("itemsView") != "notLoaded")
-            for (item in turn.array("items")) {
+            for ((position,item) in turn.array("items").withIndex()) {
                 val o = item.jsonObject
+                CloudActivityProjection.item(turn.string("id"),o,position)?.let { activities += it }
                 when(o.string("type")) {
                     "userMessage" -> o.array("content").mapNotNull { (it as? JsonObject)?.string("text") }
-                        .joinToString("\n").takeIf { it.isNotBlank() }?.let { messages += CloudMessage("user", it) }
-                    "agentMessage" -> o.string("text").takeIf { it.isNotBlank() }?.let { messages += CloudMessage("assistant", it) }
+                        .joinToString("\n").takeIf { it.isNotBlank() }?.let { messages += CloudMessage("user", it,
+                            o.string("id").takeIf { id -> id.isNotBlank() }?.let { id -> "${turn.string("id")}:$id" }.orEmpty(), turn.string("id"), position = position) }
+                    "agentMessage" -> o.string("text").takeIf { it.isNotBlank() }?.let { messages += CloudMessage("assistant", it,
+                        o.string("id").takeIf { id -> id.isNotBlank() }?.let { id -> "${turn.string("id")}:$id" }.orEmpty(), turn.string("id"),
+                        o.string("phase").ifBlank { o.string("channel") }, position) }
                 }
             }
         }
@@ -84,7 +89,18 @@ object DurableCloudWire {
             "inProgress" -> "running"; "failed", "interrupted" -> "failed"; "completed" -> "completed"; else -> task(thread).status
         }
         return CloudDetails(task(thread).copy(status = status), messages, historyCursor = turns.string("nextCursor"),
-            activeTurnId = if(status == "running") latest?.string("id").orEmpty() else "",latestTurnId = latest?.string("id").orEmpty())
+            activeTurnId = if(status == "running") latest?.string("id").orEmpty() else "",latestTurnId = latest?.string("id").orEmpty(),
+            activities = com.codex.quota.notifications.task.RemoteActivityRules.merge(emptyList(),activities),
+            turns = rows.mapNotNull { row -> (row as? JsonObject)?.let { CloudTurnInfo(it.string("id"),it.string("status"),turnDuration(it)) } })
+    }
+    fun turnDuration(turn: JsonObject): Long? {
+        (turn["durationMs"] as? JsonPrimitive)?.longOrNull?.takeIf { it >= 0 }?.let { return it }
+        fun timestamp(name: String): Long? = (turn[name] as? JsonPrimitive)?.longOrNull?.takeIf { it > 0 }?.let {
+            if(it < 100_000_000_000L) it * 1000 else it
+        }
+        val start = timestamp("startedAt") ?: return null
+        val end = timestamp("completedAt") ?: return null
+        return (end-start).takeIf { it >= 0 }
     }
     fun createConfig(name: String, repos: List<CloudRepositoryRef>): JsonObject {
         require(name.isNotBlank() && name.length <= 120 && repos.isNotEmpty())

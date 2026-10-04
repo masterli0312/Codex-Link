@@ -19,7 +19,7 @@ object RemoteActivityRules {
             a.turn_id.length in 1..128 && a.id.length in 1..257 && a.id.startsWith(a.turn_id + ":") &&
                 a.position in -1..1_000_000 &&
                 a.id.removePrefix(a.turn_id + ":").length in 1..128 &&
-                a.type in setOf("commandExecution", "fileChange", "mcpToolCall", "plan", "diff", "compaction") &&
+                a.type in setOf("commandExecution", "fileRead", "fileChange", "mcpToolCall", "plan", "diff", "compaction") &&
                 a.status in setOf("inProgress", "completed", "failed", "declined") && bytes(a.title) <= 512 && bytes(a.detail) <= 16_384 &&
                 (a.duration_ms == null || a.duration_ms >= 0) && a.files.size <= 12 && a.files.all { f ->
                     f.path.isNotBlank() && bytes(f.path) <= 1024 && bytes(f.diff) <= 8192 && f.kind in setOf("add", "delete", "update", "unknown")

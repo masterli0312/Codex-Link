@@ -22,4 +22,11 @@ class ConversationDisplayTextTest {
     @Test fun windowsLineEndingsAndSameLineRequestAreHandled() {
         assertEquals("继续", ConversationDisplayText.userText(wrapper.replace("\n", "\r\n") + "\r\n## My request:继续"))
     }
+    @Test fun cloudAttachmentManifestShowsTheRequestAndOnlyFileNames() {
+        val cloud = "# Files mentioned by the user:\n\n## 1000294150.jpg: /tmp/codex-remote-attachments/thread/request/1-1000294150.jpg\n\n## note.txt: /tmp/codex-remote-attachments/thread/request/note.txt\n\n## My request for Codex:\n修复图片\n继续同步"
+        assertEquals("修复图片\n继续同步",ConversationDisplayText.userText(cloud))
+        assertEquals(listOf("1000294150.jpg","note.txt"),ConversationDisplayText.attachmentNames(cloud))
+        assertEquals(emptyList<String>(),ConversationDisplayText.attachmentNames("请解释：\n$cloud"))
+        assertEquals("继续",ConversationDisplayText.userText(cloud.substringBefore("## My request for Codex:") + "## My request for Codex:继续"))
+    }
 }

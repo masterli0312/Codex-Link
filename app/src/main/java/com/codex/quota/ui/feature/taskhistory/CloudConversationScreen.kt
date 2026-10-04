@@ -38,6 +38,7 @@ import com.codex.quota.CodexQuotaApplication
 import com.codex.quota.R
 import com.codex.quota.data.cloud.*
 import com.codex.quota.notifications.task.TaskConversationMessage
+import com.codex.quota.notifications.task.ConversationTimelineEntry
 import com.codex.quota.ui.util.localizedAccountNickname
 import com.codex.quota.ui.util.localizedShortPlanName
 import kotlinx.coroutines.delay
@@ -62,10 +63,10 @@ internal fun CloudConversationScreen(initialNew: Boolean, onLocal: () -> Unit) {
             vm.resumeReads()
             try {
                 while (isActive) {
-                    delay(if (latest.selectedTask.isNotBlank() || latest.editor?.session?.threadId?.isNotBlank() == true) 2500 else 30_000)
-                    if (!latest.sending && (latest.editor?.awaitingTurnId?.isNotBlank() == true || latest.editor?.details?.task?.status == "running" || !latest.managingEnvironments && !latest.newTask &&
-                        (latest.selectedTask.isBlank() || latest.cache?.details?.firstOrNull { it.task.id == latest.selectedTask }?.task?.status != "completed"))
-                        )
+                    val active = latest.editor?.details?.task?.status == "running" || latest.awaitingTurnId.isNotBlank() ||
+                        latest.cache?.details?.firstOrNull { it.task.id == latest.selectedTask }?.task?.status == "running"
+                    delay(if (active) 2500 else if (latest.selectedTask.isNotBlank() || latest.editor?.session?.threadId?.isNotBlank() == true) 15_000 else 30_000)
+                    if (!latest.sending && (latest.editor?.session?.threadId?.isNotBlank() == true || !latest.managingEnvironments && !latest.newTask))
                         vm.refresh(showProgress = false)
                 }
             } finally { vm.pauseReads() }
@@ -88,7 +89,8 @@ internal fun CloudConversationScreen(initialNew: Boolean, onLocal: () -> Unit) {
         onPrepareEnvironment = vm::prepareEnvironment,onSaveEnvironment = vm::saveEnvironment,onPublishEnvironment = vm::publishEnvironment,
         onSetupAnswer = vm::editorAnswer,onSendSetupAnswer = vm::sendSetupAnswer,onUseEnvironment = vm::useEditorEnvironment,
         onPreparationModel = vm::preparationModel,onPreparationEffort = vm::preparationEffort,onRefreshPreparationModels = vm::refreshPreparationModels,
-        onReplyDraft = vm::replyDraft,onSendReply = vm::sendReply)
+        onReplyDraft = vm::replyDraft,onSendReply = vm::sendReply,
+        onQueuedEdit = vm::editQueuedReply,onQueuedSteer = vm::steerQueuedReply,onQueuedCancel = vm::cancelQueuedReply,onStop = vm::stop)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -103,7 +105,8 @@ internal fun CloudConversationContent(state: CloudUiState, onBack: () -> Unit, o
     onPrepareEnvironment: ()->Unit = {},onSaveEnvironment: ()->Unit = {},onPublishEnvironment: ()->Unit = {},
     onSetupAnswer: (String)->Unit = {},onSendSetupAnswer: ()->Unit = {},onUseEnvironment: ()->Unit = {},
     onPreparationModel: (String)->Unit = {},onPreparationEffort: (String)->Unit = {},onRefreshPreparationModels: ()->Unit = {},
-    onReplyDraft: (String)->Unit = {},onSendReply: ()->Unit = {}) {
+    onReplyDraft: (String)->Unit = {},onSendReply: ()->Unit = {},
+    onQueuedEdit: ()->Unit = {},onQueuedSteer: ()->Unit = {},onQueuedCancel: ()->Unit = {},onStop: ()->Unit = {}) {
     val context = LocalContext.current
     var accountsOpen by remember { mutableStateOf(false) }
     var environmentsOpen by remember { mutableStateOf(false) }
@@ -112,6 +115,7 @@ internal fun CloudConversationContent(state: CloudUiState, onBack: () -> Unit, o
     var voiceError by remember { mutableStateOf<Int?>(null) }
     val cache = state.cache
     val details = cache?.details?.firstOrNull { it.task.id == state.selectedTask }
+    val conversationScroll = rememberCloudConversationScroll(state.selectedTask,details != null,details?.messages?.lastOrNull { it.role == "user" }?.id.orEmpty())
     val task = details?.task ?: cache?.page?.items?.firstOrNull { it.id == state.selectedTask }
     val selectedEnvironment = cache?.environments?.firstOrNull { it.id == cache.selectedEnvironment }
     val account = state.accounts.firstOrNull { it.id == state.accountId }
@@ -161,7 +165,9 @@ internal fun CloudConversationContent(state: CloudUiState, onBack: () -> Unit, o
                     onName = onEditorName,onRepo = onEditorRepo,onInstall = onEditorInstall,onSkill = onEditorSkill,
                     onNetwork = onEditorNetwork,onCreate = onCreateEnvironment,onPrepare = onPrepareEnvironment,
                     onSave = onSaveEnvironment,onPublish = onPublishEnvironment,onAnswer = onSetupAnswer,onSendAnswer = onSendSetupAnswer,onUse = onUseEnvironment,
-                    onModel = onPreparationModel,onEffort = onPreparationEffort,onRefreshModels = onRefreshPreparationModels,modifier = Modifier.weight(1f))
+                    onModel = onPreparationModel,onEffort = onPreparationEffort,onRefreshModels = onRefreshPreparationModels,modifier = Modifier.weight(1f),
+                    queued = cache?.pendingReplies?.firstOrNull { it.threadId == state.editor.session?.threadId },
+                    onQueuedEdit = onQueuedEdit,onQueuedSteer = onQueuedSteer,onQueuedCancel = onQueuedCancel,onStop = onStop)
             } else if (state.managingEnvironments) {
                 CloudEnvironmentManagementContent(environments = cache?.environments.orEmpty(), selectedId = cache?.selectedEnvironment.orEmpty(),
                     accountName = account?.let { localizedAccountNickname(context, it) }.orEmpty(), loading = state.loading,
@@ -202,12 +208,18 @@ internal fun CloudConversationContent(state: CloudUiState, onBack: () -> Unit, o
                         onPreparationModel,onPreparationEffort,onRefreshPreparationModels)
                 }
             } else if (state.selectedTask.isNotBlank()) {
-                LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                LazyColumn(Modifier.weight(1f), state = conversationScroll.state, contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
                     if (details == null) item { Text(stringResource(if (state.loading) R.string.cloud_loading_task else R.string.cloud_no_result), color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                    details?.messages?.let { messages -> items(messages.size, key = { "cloud-message:$it" }) { index ->
-                        val message = messages[index]
-                        ConversationMessage(TaskConversationMessage(message.role, message.text.take(48_000)), showCopy = task?.status == "completed")
-                    } }
+                    details?.let { transcript ->
+                        items(com.codex.quota.notifications.task.ConversationTimeline.turnGroups(cloudTranscript(transcript)),
+                            key = { "cloud-turn:" + com.codex.quota.notifications.task.ConversationTimeline.turn(it.first()) }) { entries ->
+                            val turn = com.codex.quota.notifications.task.ConversationTimeline.turn(entries.first())
+                            val info = transcript.turns.firstOrNull { it.id == turn }
+                            ConversationTurnBlock(entries,
+                                completed = info?.status?.let { it != "inProgress" } ?: (turn != transcript.latestTurnId || transcript.task.status != "running"),
+                                durationMs = info?.durationMs,onBrowseProcess = conversationScroll.browse)
+                        }
+                    }
                     if (!details?.diff.isNullOrBlank()) item {
                         TextButton(onClick = { showDiff = !showDiff }) { Icon(Icons.Outlined.Difference, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.cloud_diff)) }
                         if (showDiff) Text(details!!.diff.take(48_000), style = MaterialTheme.typography.bodySmall)
@@ -220,9 +232,13 @@ internal fun CloudConversationContent(state: CloudUiState, onBack: () -> Unit, o
                     } }
                 }
                 Column(Modifier.fillMaxWidth().imePadding().padding(horizontal = 20.dp,vertical = 12.dp)) {
+                    cache?.pendingReplies?.firstOrNull { it.threadId == state.selectedTask }?.let { pending ->
+                        QueuedMessageChip(pending.text,!state.sending,task?.status == "running",onQueuedEdit,onQueuedSteer,onQueuedCancel)
+                        Spacer(Modifier.height(10.dp))
+                    }
                     CloudMessageComposer(state.reply,onReplyDraft,onSendReply,state.models,state.choice,state.sending,
-                        details != null && DurableCloudWire.validChoice(state.choice,state.models) && (task?.status != "running" || details.activeTurnId.isNotBlank()),
-                        onPreparationModel,onPreparationEffort,onRefreshPreparationModels,running = task?.status == "running")
+                        details != null && cache?.pendingReplies?.none { it.threadId == state.selectedTask } != false && DurableCloudWire.validChoice(state.choice,state.models) && (task?.status != "running" || details.activeTurnId.isNotBlank()),
+                        onPreparationModel,onPreparationEffort,onRefreshPreparationModels,running = task?.status == "running",onStop = onStop)
                 }
             } else {
                 if (cache?.page?.items.isNullOrEmpty() && !state.loading) CloudEmpty(stringResource(R.string.cloud_empty_tasks), onNew, Modifier.weight(1f))

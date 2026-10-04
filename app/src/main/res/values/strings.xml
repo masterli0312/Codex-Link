@@ -566,6 +566,11 @@
     <string name="remote_queue_send">Send after completion</string>
     <string name="remote_steer_send">Adjust current task</string>
     <string name="remote_queued">Queued</string>
+    <string name="conversation_edit_queued">Edit message</string>
+    <string name="remote_activity_read">Read files</string>
+    <string name="conversation_elapsed">Time: %1$d min %2$d sec</string>
+    <string name="conversation_steer_queued">Send as guidance</string>
+    <string name="conversation_cancel_queued">Cancel sending</string>
     <string name="remote_restore_draft">Restore draft</string>
     <string name="conversation_projects">Projects</string>
     <string name="conversation_chat">Chat</string>
@@ -603,7 +608,7 @@
     <string name="remote_command_approval">Command approval</string>
     <string name="remote_file_approval">File change approval</string>
     <string name="remote_approval_desktop_required">The phone cannot grant lasting access. Deny this request, then perform the required action on the computer.</string>
-    <string name="remote_activity_title">Task activity</string>
+    <string name="remote_activity_title">Execution process</string>
     <string name="remote_activity_all">View all (%1$d)</string>
     <string name="remote_activity_command">Command execution</string>
     <string name="remote_activity_files">Changed files</string>

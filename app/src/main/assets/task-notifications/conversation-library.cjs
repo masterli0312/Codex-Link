@@ -51,13 +51,15 @@ function snapshot(thread,host){
    const pictures=images.projectImages(thread.id,item,thread.cwd);
    if((typeof text!=='string'||!text.trim())&&!pictures.length)continue;
    const limited=bounded(text,16384);truncated ||= limited!==text;
-   messages.push({role,text:limited,...(pictures.length?{images:pictures}:{}),...(item.id?{id:turn.id+':'+item.id,position}:{})});if(messages.length>60){messages.shift();truncated=true;}
+   messages.push({role,text:limited,...(pictures.length?{images:pictures}:{}),...(typeof item.phase==='string'?{phase:item.phase}:{}),...(item.id?{id:turn.id+':'+item.id,position}:{})});if(messages.length>60){messages.shift();truncated=true;}
  }
  const turns=thread.turns||[],last=turns.at(-1),completed=last&&['completed','interrupted','failed'].includes(last.status);
  const reply=[...messages].reverse().find(m=>m.role==='assistant')?.text||'';
  const result={conversation_id:hash(thread.id),title:bounded(thread.name||thread.title||thread.preview,240),reply,messages,truncated,activities:activity.projectTurns(turns),
    completed_at:new Date(Number(thread.updatedAt||thread.createdAt||0)*1000).toISOString()};
  result.running=last?.status==='inProgress';
+ const durations=Object.fromEntries(turns.map(t=>[t.id,activity.turnDuration(t)]).filter(([id,d])=>id&&d!==null).slice(-40));
+ if(Object.keys(durations).length)result.turn_durations=durations;
  if((completed||result.running)&&last?.id)result.thread_ref={host_id:host,thread_id:thread.id,baseline_turn:last.id};
  if(completed)result.remote_ref=result.thread_ref;
  while(Buffer.byteLength(JSON.stringify(result))>160000&&result.messages.length){result.messages.shift();result.truncated=true;}

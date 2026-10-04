@@ -15,7 +15,9 @@ class CloudRpc(private val token: String, private val workspace: String, client:
     private val ready = CompletableDeferred<Unit>()
     private val pending = ConcurrentHashMap<Long, CompletableDeferred<JsonObject>>()
     private val ids = AtomicLong()
-    val events = Channel<JsonObject>(Channel.CONFLATED)
+    // Deltas are ordered fragments, not interchangeable snapshots. Overflow closes
+    // the socket so the owner reconnects and hydrates rather than silently losing text.
+    val events = Channel<JsonObject>(256)
     private val socket = client.newWebSocket(Request.Builder().url("wss://codex-cloud-backend.chatgpt.com/")
         .header("ChatGPT-Account-ID", workspace).header("X-OpenAI-Product-Sku", "codex")
         .header("Sec-WebSocket-Protocol", "codex-app-server, codex-client.desktop, openai-bearer.$token").build(), object : WebSocketListener() {
@@ -27,7 +29,7 @@ class CloudRpc(private val token: String, private val workspace: String, client:
             if(id != null) pending.remove(id)?.let {
                 if(message["error"] != null) it.completeExceptionally(CloudException(CloudErrorKind.RESPONSE))
                 else it.complete(message["result"] as? JsonObject ?: JsonObject(emptyMap()))
-            } else events.trySend(message)
+            } else if (events.trySend(message).isFailure) close()
         }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             fail(CloudException(response?.let { DurableCloudApi.errorKind(it) } ?: CloudErrorKind.NETWORK, response?.code))
