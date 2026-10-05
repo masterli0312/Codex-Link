@@ -222,7 +222,7 @@ if (Test-Path -LiteralPath $connectionFile) {
 Stop-ScheduledTask -TaskName $remoteTaskName -ErrorAction SilentlyContinue
 Stop-OwnRemoteBridge $runtime
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'task-content.cjs') -Destination (Join-Path $runtime 'task-content.cjs') -Force
-foreach ($name in @('remote.cjs', 'remote-core.cjs', 'codex-client.cjs', 'native-runtime.cjs', 'conversation-library.cjs', 'conversation-images.cjs', 'live-watch.cjs', 'remote-activity.cjs', 'remote-goal.cjs', 'remote-options.cjs', 'remote-stream.cjs', 'remote-attachments.cjs', 'shared-server.cjs', 'Enable-SharedConversations.ps1', 'SettingsFile.ps1')) {
+foreach ($name in @('remote.cjs', 'remote-core.cjs', 'codex-client.cjs', 'native-runtime.cjs', 'conversation-library.cjs', 'conversation-images.cjs','conversation-files.cjs','conversation-questions.cjs','completion-watch.cjs', 'live-watch.cjs', 'remote-activity.cjs', 'remote-goal.cjs', 'remote-options.cjs', 'remote-stream.cjs', 'remote-attachments.cjs', 'shared-server.cjs', 'Enable-SharedConversations.ps1', 'SettingsFile.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $runtime $name) -Force
 }
 $monitorEnabledAt = [DateTime]::UtcNow.ToString('o')

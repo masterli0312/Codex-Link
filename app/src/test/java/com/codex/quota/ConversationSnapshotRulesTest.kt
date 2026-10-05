@@ -53,6 +53,28 @@ class ConversationSnapshotRulesTest {
         assertFalse(ConversationSnapshotRules.regresses(current, latest.copy(reply = "new", completed_at = Instant.ofEpochMilli(11_000).toString(),
             messages = listOf(TaskConversationMessage("assistant", "new", "new:assistant"))), nativeRewrite = true))
     }
+    @Test fun aNewerReadTimestampCannotEraseTheTailOfTheSameRunningTurn() {
+        val live = latest.copy(running = true, messages = latest.messages + TaskConversationMessage("assistant", "last streamed section", "new:last", position = 10))
+        val reread = latest.copy(running = true, completed_at = Instant.ofEpochMilli(11_000).toString())
+        assertTrue(ConversationSnapshotRules.regresses(record(live), reread, nativeRewrite = true))
+        val truncated = live.copy(truncated = true, completed_at = Instant.ofEpochMilli(12_000).toString(),
+            messages = listOf(TaskConversationMessage("assistant", "last streamed section continued", "new:last", position = 10)))
+        // An actual bounded tail may discard older positioned messages, not the newest one.
+        assertFalse(ConversationSnapshotRules.regresses(record(live.copy(messages = live.messages.mapIndexed { n, m -> m.copy(position = if (n == 0) 1 else m.position) })), truncated, nativeRewrite = true))
+    }
+    @Test fun historicalToolPagesDoNotEvictNewToolsOrMoveThemBetweenEveryUpdate() {
+        fun tool(n: Int) = RemoteActivity("turn:$n", "turn", "commandExecution", position = n, detail = "x".repeat(2000))
+        val recent = (60..99).map(::tool)
+        val older = (0..19).map(::tool)
+        var values = RemoteActivityRules.merge(emptyList(), recent)
+        val expected = values.map { it.id }
+        repeat(3) {
+            values = RemoteActivityRules.merge(values, older)
+            assertEquals(expected, values.map { it.id })
+            values = RemoteActivityRules.merge(values, recent)
+            assertEquals(expected, values.map { it.id })
+        }
+    }
     @Test fun differentThreadsAndComputersCannotOverwriteTheCurrentSnapshot() {
         val current = record(latest)
         assertTrue(ConversationSnapshotRules.regresses(current, latest.copy(remote_ref = latest.remote_ref!!.copy(thread_id = "other"))))

@@ -7,7 +7,7 @@ function validAttachment(a){return !!a&&typeof a==='object'&&!Array.isArray(a)&&
  a.name.length>0&&!/[\\/\r\n\0]/.test(a.name)&&EXT.has(a.name.split('.').pop().toLowerCase())&&
  typeof a.mime==='string'&&a.mime.length<=120&&typeof a.url==='string'&&a.url.length<=2048&&
  Number.isSafeInteger(a.size)&&a.size>0&&a.size<=MAX&&typeof a.sha256==='string'&&/^[a-f0-9]{64}$/.test(a.sha256);}
-function validAttachments(values){return values===undefined||Array.isArray(values)&&values.length<=3&&
+function validAttachments(values){return values===undefined||Array.isArray(values)&&values.length<=10&&
  values.every(validAttachment)&&new Set(values.map(v=>v.id)).size===values.length&&values.reduce((n,a)=>n+a.size,0)<=16*1024*1024;}
 function attachmentAad(host,thread,id){return 'CodexUsage:attachment:'+host+':'+thread+':'+id;}
 function decryptAttachment(bytes,key,aad){

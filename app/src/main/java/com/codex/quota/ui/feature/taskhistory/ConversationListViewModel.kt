@@ -15,11 +15,18 @@ class ConversationListViewModel(context: Context) : ViewModel() {
     private val appContext = context.applicationContext
     private val inbox = TaskInbox(appContext)
     private val computerStore = ComputerConnectionStore(appContext)
+    private val syncStore = ConversationSyncSelectionStore(appContext)
     val records = TaskInbox.changes.mapLatest { withContext(Dispatchers.IO) { inbox.list() } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(0), null)
     val computers = combine(TaskNotificationStore(appContext).settings, ComputerConnectionStore.changes) { settings, _ -> settings }
         .mapLatest { settings -> withContext(Dispatchers.IO) { computerStore.all(settings) } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(0), emptyList())
+    val syncSelections = combine(computers, ConversationSyncSelectionStore.changes) { computers, _ -> computers }
+        .mapLatest { computers -> withContext(Dispatchers.IO) {
+            computers.associate { ConversationSyncRules.scope(it) to syncStore.read(it) }
+        } }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(0), null)
+    suspend fun saveSyncSelection(computer: ComputerConnection, ids: Set<String>, available: List<RemoteThreadSummary>) =
+        withContext(Dispatchers.IO) { syncStore.replace(computer, ids, available) }
 
     // The last completed projection avoids an empty list frame on return from a detail.
     private val presentations = linkedMapOf<List<String>, ConversationListPresentation>()

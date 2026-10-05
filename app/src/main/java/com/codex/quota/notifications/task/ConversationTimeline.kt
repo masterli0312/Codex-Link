@@ -42,7 +42,10 @@ object ConversationTimeline {
     fun liveUserKey(turn: String): String = "current-user:$turn"
     fun liveReplyKey(turn: String): String = "current-reply:$turn"
 
-    fun build(messages: List<TaskConversationMessage>, activities: List<RemoteActivity>, continuityTurn: String = ""): List<ConversationTimelineEntry> {
+    fun build(rawMessages: List<TaskConversationMessage>, activities: List<RemoteActivity>, continuityTurn: String = ""): List<ConversationTimelineEntry> {
+        // Retire old cached inline imageView messages when the typed activity arrives.
+        val viewedImages = activities.filter { it.type == "imageView" }.map { it.id }.toSet()
+        val messages = rawMessages.filterNot { it.id in viewedImages }
         val currentMessages = messages.filter { continuityTurn.isNotBlank() && it.id.substringBefore(':', "") == continuityTurn }
         val currentUser = currentMessages.firstOrNull { it.role == "user" }
         val currentReply = currentMessages.lastOrNull { it.role == "assistant" }

@@ -26,7 +26,7 @@ const getGoal=async(client,thread)=>normalizeGoal((await client.call('thread/goa
 function safeError(e){
  if(e.rpcCode===-32601)return 'GOAL_UNAVAILABLE';
  if(e.rpcCode===-32600&&typeof e.rpcMessage==='string'&&/already has an active writer/.test(e.rpcMessage))return 'DESKTOP_OWNS_THREAD';
- return ['BUSY','STALE','GOAL_CHANGED','GOAL_ALREADY_EXISTS','GOAL_NOT_PAUSED','GOAL_INVALID','HOST_BUSY','GOAL_NOT_OWNED'].includes(e.message)?e.message:'GOAL_FAILED';
+ return ['BUSY','STALE','GOAL_CHANGED','GOAL_ALREADY_EXISTS','GOAL_NOT_PAUSED','GOAL_INVALID','HOST_BUSY','GOAL_NOT_OWNED','INVALID_MODEL_SELECTION'].includes(e.message)?e.message:'GOAL_FAILED';
 }
 async function handleGoal(controller,c){
  if(c.action!=='goal_read'&&controller.journal[c.id]){await controller.replay(c,c.id);return;}
@@ -35,9 +35,9 @@ async function handleGoal(controller,c){
  try{
   a=controller.active;
   const mutating=c.action!=='goal_read';
-  if(mutating&&a&&(a.c.thread_id!==c.thread_id||a.c.id!==c.target_id))throw Error('HOST_BUSY');
+  if(mutating&&a&&((a.actualThread||a.c.thread_id)!==c.thread_id||a.c.id!==c.target_id))throw Error('HOST_BUSY');
   if(['goal_start','goal_resume'].includes(c.action)&&a)throw Error('HOST_BUSY');
-  owned=!!a&&a.c.thread_id===c.thread_id;
+  owned=!!a&&(a.actualThread||a.c.thread_id)===c.thread_id;
   client=owned?a.client:controller.clientFactory();
   if(!owned){client.setHandlers(()=>{},id=>client.reject(id));await client.connect();}
   const previous=await getGoal(client,c.thread_id);
@@ -50,6 +50,9 @@ async function handleGoal(controller,c){
   if(!owned&&previous?.status==='active')throw Error('GOAL_NOT_OWNED');
   if(['goal_start','goal_resume'].includes(c.action)){
    const local={...controller.resolve(c),permission:c.permission||'default'},read=await client.read(c.thread_id);
+   const selected=await require('./remote-core.cjs').selection(client,c,local);
+   if(selected.model)local.model=selected.model;
+   if(selected.effort)local.resumeEffort=selected.effort;
    if(read.thread?.id!==c.thread_id||read.thread?.status?.type==='active')throw Error('BUSY');
    // An already-active persisted goal is never resumed implicitly by this bridge.
    // This installed protocol has no deferGoalContinuation on thread/resume.

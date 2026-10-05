@@ -51,14 +51,14 @@ class CodexClient{
     }
     return models;
   }
-  resume(threadId,local){this.local=local;return this.call('thread/resume',{threadId,excludeTurns:true,cwd:local.cwd,...(local.model?{model:local.model}:{}),...(local.modelProvider?{modelProvider:local.modelProvider}:{}),...permissionOptions(local.permission).resume});}
+  resume(threadId,local){this.local=local;return this.call('thread/resume',{threadId,excludeTurns:true,cwd:local.cwd,...(local.resumeEffort?{config:{model_reasoning_effort:local.resumeEffort}}:{}),...(local.model?{model:local.model}:{}),...(local.modelProvider?{modelProvider:local.modelProvider}:{}),...permissionOptions(local.permission).resume});}
   async modes(){return (await this.call('collaborationMode/list',{})).data||[];}
   start(threadId,text,id,options={}){const effort=options.model?options.effort:this.local?.effort;return this.call('turn/start',{threadId,input:[{type:'text',text},...(options.inputs||[])],clientUserMessageId:id,
     ...(options.model?{model:options.model}:{}),...(effort?{effort}:{}),
     ...(options.mode?{collaborationMode:{mode:options.mode,settings:{model:options.model,reasoning_effort:effort||null,developer_instructions:null}}}:{}),
     ...permissionOptions(options.permission||this.local?.permission).turn});}
-  steer(threadId,turnId,text,id){return this.call('turn/steer',{threadId,expectedTurnId:turnId,
-    input:[{type:'text',text}],clientUserMessageId:id});}
+  steer(threadId,turnId,text,id,inputs=[]){return this.call('turn/steer',{threadId,expectedTurnId:turnId,
+    input:[{type:'text',text},...inputs],clientUserMessageId:id});}
   async interrupt(threadId,turnId){
     if(this.closed)throw Error('CODEX_DISCONNECTED');
     // turn/start may return before the engine installs its active turn. Wait for the real event.

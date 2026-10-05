@@ -48,6 +48,19 @@ class CloudRepository(private val accounts: CodexAccountRepository, private val 
         } while(cursor.isNotBlank())
         result.distinctBy { it.model }
     }
+    suspend fun archivedTasks(identity: CloudIdentity, cursor: String = "") = rpc(identity) { socket ->
+        val page = socket.request("thread/list", buildJsonObject {
+            put("archived", true); put("limit", 20); put("sortKey", "updated_at"); put("sortDirection", "desc")
+            if (cursor.isNotBlank()) put("cursor", cursor)
+        }, mutation = false)
+        CloudPage(page.array("data").map { DurableCloudWire.task(it.jsonObject) }, page.string("nextCursor"))
+    }
+    suspend fun history(identity: CloudIdentity, id: String, cursor: String) = read(identity) { token ->
+        require(DurableCloudWire.validId(id) && cursor.isNotBlank())
+        val turns = durable.get(token, identity.workspaceId, listOf("v2", "threads", id, "turns"),
+            mapOf("limit" to "20", "itemsView" to "full", "sortDirection" to "desc", "cursor" to cursor))
+        DurableCloudWire.details(buildJsonObject { put("id", id) }, turns)
+    }
     suspend fun details(identity: CloudIdentity, id: String) = read(identity) { token ->
         val thread = durable.get(token, identity.workspaceId, listOf("v1", "threads", id))["thread"]!!.jsonObject
         val turns = durable.get(token, identity.workspaceId, listOf("v2", "threads", id, "turns"), mapOf("limit" to "20", "itemsView" to "full", "sortDirection" to "desc"))
@@ -137,6 +150,11 @@ class CloudRepository(private val accounts: CodexAccountRepository, private val 
         if(active && !DurableCloudWire.validId(expectedTurnId)) throw CloudException(CloudErrorKind.RESPONSE)
         val (method,params) = DurableCloudWire.replyRequest(threadId,prompt,choice,active,expectedTurnId)
         DurableCloudWire.replyTurnId(socket.request(method,params))
+    }
+    suspend fun manageThread(identity: CloudIdentity, action: String, id: String, name: String = "") = rpc(identity) { socket ->
+        val (method, params) = CloudThreadManagement.request(action, id, name)
+        socket.request(method, params)
+        Unit
     }
     suspend fun stop(identity: CloudIdentity,threadId: String,turnId: String) = rpc(identity) { socket ->
         require(DurableCloudWire.validId(threadId) && DurableCloudWire.validId(turnId))

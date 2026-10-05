@@ -41,3 +41,11 @@ test('activities are ordered and updated by turn plus item identity, never by ma
  const bounded=mergeActivities([],Array.from({length:80},(_,i)=>projectItem('turn',{id:String(i),type:'commandExecution',command:'test',status:'completed',aggregatedOutput:'x'.repeat(8192)})));
  assert.ok(bounded.length<=40);assert.ok(Buffer.byteLength(JSON.stringify(bounded))<=65536);
 });
+
+test('older tool pages cannot evict the newest activities and make the live transcript oscillate',()=>{
+ const {mergeActivities}=require('../../app/src/main/assets/task-notifications/remote-activity.cjs');
+ const item=n=>({id:'turn:'+n,turn_id:'turn',type:'commandExecution',status:'completed',position:n,title:'command',detail:'x'.repeat(2000),files:[]});
+ const recent=Array.from({length:40},(_,n)=>item(60+n)),history=Array.from({length:20},(_,n)=>item(n));
+ let values=mergeActivities([],recent);const latest=values.map(x=>x.id);
+ for(let n=0;n<3;n++){values=mergeActivities(values,history);assert.deepEqual(values.map(x=>x.id),latest);values=mergeActivities(values,recent);assert.deepEqual(values.map(x=>x.id),latest);}
+});

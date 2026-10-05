@@ -8,6 +8,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -26,7 +27,8 @@ import com.codex.quota.notifications.task.RemoteModelOption
 internal fun RemoteModelPicker(models: List<RemoteModelOption>, selected: String,
     loading: Boolean, failed: Boolean, onRefresh: () -> Unit, onSelect: (String) -> Unit, onDismiss: () -> Unit) {
     OptionSheet(stringResource(R.string.remote_model), onDismiss, footer = {
-        TextButton(onClick = onRefresh, enabled = !loading) { Text(stringResource(R.string.remote_refresh_models)) }
+        if (failed || models.isEmpty()) TextButton(onClick = onRefresh, enabled = !loading,
+            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)) { Text(stringResource(R.string.remote_refresh_models)) }
     }) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -51,14 +53,15 @@ internal fun RemoteEffortPicker(efforts: List<String>, selected: String, onSelec
 
 @Composable
 private fun ModelChoice(label: String, selected: Boolean, onClick: () -> Unit) {
-    Surface(shape = RoundedCornerShape(16.dp), color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-        contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface) {
+    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerLowest,
+        contentColor = MaterialTheme.colorScheme.onSurface) {
         Row(Modifier.fillMaxWidth().selectable(selected, role = Role.RadioButton, onClick = onClick)
-            .heightIn(min = 64.dp).padding(horizontal = 16.dp, vertical = 12.dp),
+            .heightIn(min = 52.dp).padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
-            RadioButton(selected, onClick = null)
+            if (selected) Icon(Icons.Outlined.Check, null, Modifier.size(22.dp))
+            else Spacer(Modifier.size(22.dp))
         }
     }
 }
@@ -85,7 +88,7 @@ private fun optionListHeight() = (LocalConfiguration.current.screenHeightDp * 0.
 @Composable
 private fun OptionSheet(title: String, onDismiss: () -> Unit, footer: @Composable RowScope.() -> Unit = {}, content: @Composable () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = MaterialTheme.colorScheme.surface) {
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLowest) {
         Column(Modifier.fillMaxWidth().heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.85f).dp)
             .padding(horizontal = 20.dp).padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -95,7 +98,7 @@ private fun OptionSheet(title: String, onDismiss: () -> Unit, footer: @Composabl
             Column(Modifier.weight(1f, fill = false)) { content() }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                 footer()
-                TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_got_it)) }
+
             }
         }
     }

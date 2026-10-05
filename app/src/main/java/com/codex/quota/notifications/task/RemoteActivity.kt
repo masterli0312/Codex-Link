@@ -8,18 +8,20 @@ data class RemoteChangedFile(val path: String, val diff: String = "", val kind: 
 @Serializable
 data class RemoteActivity(val id: String, val turn_id: String, val type: String, val status: String = "completed",
     val title: String = "", val detail: String = "", val files: List<RemoteChangedFile> = emptyList(),
-    val exit_code: Int? = null, val duration_ms: Long? = null, val truncated: Boolean = false, val position: Int = -1)
+    val exit_code: Int? = null, val duration_ms: Long? = null, val truncated: Boolean = false, val position: Int = -1, val images: List<ConversationImageRef> = emptyList())
 
 /** Bounded provider projections; a tool result is never reinterpreted as a command to execute. */
 object RemoteActivityRules {
     private fun bytes(value: String) = value.toByteArray().size
-    private fun size(a: RemoteActivity) = bytes(a.title) + bytes(a.detail) + a.files.sumOf { bytes(it.path) + bytes(it.diff) }
+    private fun size(a: RemoteActivity) = bytes(a.title) + bytes(a.detail) + a.files.sumOf { bytes(it.path) + bytes(it.diff) } + a.images.sumOf { bytes(it.id) }
     fun valid(activities: List<RemoteActivity>): Boolean = activities.size <= 40 && activities.map { it.id }.distinct().size == activities.size &&
         activities.sumOf(::size) <= 65_536 && activities.all { a ->
             a.turn_id.length in 1..128 && a.id.length in 1..257 && a.id.startsWith(a.turn_id + ":") &&
                 a.position in -1..1_000_000 &&
                 a.id.removePrefix(a.turn_id + ":").length in 1..128 &&
-                a.type in setOf("commandExecution", "fileRead", "fileChange", "mcpToolCall", "plan", "diff", "compaction") &&
+                a.type in setOf("commandExecution", "fileRead", "fileChange", "mcpToolCall", "plan", "diff", "compaction", "imageView") &&
+                a.images.size <= 10 && a.images.map { it.id }.distinct().size == a.images.size &&
+                a.images.all { it.id.matches(Regex("[a-f0-9]{64}")) } && (a.images.isEmpty() || a.type == "imageView") &&
                 a.status in setOf("inProgress", "completed", "failed", "declined") && bytes(a.title) <= 512 && bytes(a.detail) <= 16_384 &&
                 (a.duration_ms == null || a.duration_ms >= 0) && a.files.size <= 12 && a.files.all { f ->
                     f.path.isNotBlank() && bytes(f.path) <= 1024 && bytes(f.diff) <= 8192 && f.kind in setOf("add", "delete", "update", "unknown")
@@ -36,7 +38,12 @@ object RemoteActivityRules {
             }
             }
         }
-        val bounded = values.values.toList().takeLast(40).toMutableList()
+        // A delayed history page can reintroduce old tools after the live tail.
+        // Bound by native order within a turn, not by the last source that mentioned an item.
+        val ordered = values.values.groupBy { it.turn_id }.values.flatMap { turn ->
+            turn.sortedBy { if (it.position < 0) Int.MAX_VALUE else it.position }
+        }
+        val bounded = ordered.takeLast(40).toMutableList()
         while (bounded.sumOf(::size) > 65_536) bounded.removeAt(0)
         return bounded
     }

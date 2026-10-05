@@ -31,14 +31,10 @@ internal fun ConversationHeader(title: String, computer: ComputerConnection?, no
     val connected = computer?.recentlyReachable(now) == true
     val checking = computer?.checking == true || computer?.lastProbeAt == 0L
     val status = stringResource(if (connected) R.string.computer_connected else if (checking) R.string.computer_checking else R.string.computer_disconnected)
-    val surface = MaterialTheme.colorScheme.surfaceContainerLowest
-    Row(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Surface(shape = CircleShape, color = surface) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back)) }
-        }
-        Surface(Modifier.weight(1f), shape = RoundedCornerShape(28.dp), color = surface) {
-            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+    Row(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back)) }
+            Column(Modifier.weight(1f).padding(horizontal = 4.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     if (remote) Box(Modifier.size(18.dp)) {
@@ -51,18 +47,16 @@ internal fun ConversationHeader(title: String, computer: ComputerConnection?, no
                         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-        }
-        Surface(shape = RoundedCornerShape(28.dp), color = surface) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val statusLabel = stringResource(R.string.conversation_info)
-                val statusColor = MaterialTheme.colorScheme.onSurfaceVariant
-                IconButton(onClick = onStatus) {
-                    Canvas(Modifier.size(20.dp).semantics { contentDescription = statusLabel }) {
-                        drawArc(statusColor, -90f, 270f, false, style = Stroke(2.5.dp.toPx(), cap = StrokeCap.Round))
-                    }
-                }
-                Box { actions() }
-            }
-        }
+        IconButton(onClick = onStatus) { ConversationStatusIcon() }
+        Box { actions() }
+    }
+}
+
+@Composable
+internal fun ConversationStatusIcon() {
+    val label = stringResource(R.string.conversation_info)
+    val color = MaterialTheme.colorScheme.onSurfaceVariant
+    Canvas(Modifier.size(20.dp).semantics { contentDescription = label }) {
+        drawArc(color, -90f, 270f, false, style = Stroke(2.5.dp.toPx(), cap = StrokeCap.Round))
     }
 }

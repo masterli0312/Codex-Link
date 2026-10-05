@@ -42,6 +42,63 @@ class CloudEnvironmentViewModelTest {
         every { store.preparationChoice(any()) } returns null
     }
     @After fun finish() { Dispatchers.resetMain() }
+    @Test fun `list actions target their own cloud row without changing the open conversation`() = runTest(dispatcher) {
+        val tasks = listOf(CloudTask("task-a", "First"), CloudTask("task-b", "Second"))
+        coEvery { repository.tasks(identity, any()) } returns CloudPage(tasks)
+        coEvery { repository.manageThread(identity, any(), any(), any()) } returns Unit
+        val vm = CloudConversationViewModel(app, dispatcher)
+        vm.selectAccount(identity.accountId); advanceUntilIdle()
+        vm.resumeReads(); advanceUntilIdle()
+        vm.open("task-a"); advanceUntilIdle()
+        vm.pinThread("task-b"); advanceUntilIdle()
+        assertTrue(vm.state.value.cache!!.pinnedThreads.contains("task-b"))
+        vm.renameThread("task-b", "Renamed"); advanceUntilIdle()
+        coVerify(exactly = 1) { repository.manageThread(identity, "rename", "task-b", "Renamed") }
+        assertEquals("task-a", vm.state.value.selectedTask)
+        assertEquals("Renamed", vm.state.value.cache!!.page.items.first { it.id == "task-b" }.title)
+        vm.archiveThread("task-b"); advanceUntilIdle()
+        coVerify(exactly = 1) { repository.manageThread(identity, "archive", "task-b", "") }
+        assertEquals("task-a", vm.state.value.selectedTask)
+        assertFalse(vm.state.value.cache!!.page.items.any { it.id == "task-b" })
+        coVerify(exactly = 0) { repository.manageThread(identity, any(), "task-a", any()) }
+    }
+    @Test fun `a rejected older cloud turn cannot confirm the opening cache`() = runTest(dispatcher) {
+        val cached = CloudDetails(CloudTask("task-a", "Fixture"), listOf(
+            CloudMessage("assistant", "previous reply", "old:a", turnId = "old"),
+            CloudMessage("assistant", "latest reply", "latest:a", turnId = "latest")), latestTurnId = "latest")
+        val old = cached.copy(messages = cached.messages.take(1), latestTurnId = "old")
+        every { store.cache(identity) } returns CloudCache(identity, details = listOf(cached))
+        coEvery { repository.details(identity, "task-a") } returns old
+        val vm = CloudConversationViewModel(app, dispatcher)
+        vm.selectAccount(identity.accountId); advanceUntilIdle()
+        vm.resumeReads(); advanceUntilIdle()
+        vm.open("task-a"); advanceUntilIdle()
+        assertTrue(vm.state.value.openingTask)
+        assertEquals("latest", vm.state.value.cache?.details?.single()?.latestTurnId)
+        coEvery { repository.details(identity, "task-a") } returns cached
+        vm.refresh(); advanceUntilIdle()
+        assertFalse(vm.state.value.openingTask)
+        assertEquals("latest reply", vm.state.value.cache?.details?.single()?.messages?.last()?.text)
+    }
+    @Test fun `opening cached cloud content waits for this opening read and isolates another selection`() = runTest(dispatcher) {
+        val cached = CloudDetails(CloudTask("task-a", "Fixture"), listOf(CloudMessage("assistant", "old cached reply")))
+        every { store.cache(identity) } returns CloudCache(identity, details = listOf(cached))
+        val firstRead = CompletableDeferred<CloudDetails>()
+        coEvery { repository.details(identity, "task-a") } coAnswers { firstRead.await() }
+        val fresh = CloudDetails(CloudTask("task-b", "Second"), listOf(CloudMessage("assistant", "latest reply")))
+        coEvery { repository.details(identity, "task-b") } returns fresh
+        val vm = CloudConversationViewModel(app, dispatcher)
+        vm.selectAccount(identity.accountId); advanceUntilIdle()
+        vm.resumeReads(); advanceUntilIdle()
+        vm.open("task-a"); runCurrent()
+        assertTrue(vm.state.value.openingTask)
+        assertEquals("old cached reply", vm.state.value.cache?.details?.single()?.messages?.single()?.text)
+        vm.open("task-b"); advanceUntilIdle()
+        assertFalse("selected=${vm.state.value.selectedTask}, error=${vm.state.value.error}, loading=${vm.state.value.loading}",vm.state.value.openingTask)
+        firstRead.complete(cached); advanceUntilIdle()
+        assertEquals("task-b", vm.state.value.selectedTask)
+        assertEquals("latest reply", vm.state.value.cache?.details?.first { it.task.id == "task-b" }?.messages?.single()?.text)
+    }
     @Test fun `configuration return refreshes environment list even when task detail was open`() = runTest(dispatcher) {
         val vm = CloudConversationViewModel(app, dispatcher)
         vm.selectAccount(identity.accountId); runCurrent()

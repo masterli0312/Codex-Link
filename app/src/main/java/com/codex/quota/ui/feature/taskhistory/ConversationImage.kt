@@ -3,6 +3,12 @@ package com.codex.quota.ui.feature.taskhistory
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -61,6 +67,16 @@ internal fun ConversationImage(image: ConversationImageRef, recordId: String?, c
     }
     if (expanded && current != null && recordId != null) {
         var large by remember(image.id, recordId) { mutableStateOf(current) }
+        var zoom by remember(image.id) { mutableFloatStateOf(1f) }
+        var offset by remember(image.id) { mutableStateOf(Offset.Zero) }
+        var size by remember(image.id) { mutableStateOf(IntSize.Zero) }
+        val transform = rememberTransformableState { scale, pan, _ ->
+            zoom = (zoom * scale).coerceIn(1f, 5f)
+            val desired = offset + pan
+            val maxX = size.width * (zoom - 1f) / 2f
+            val maxY = size.height * (zoom - 1f) / 2f
+            offset = Offset(desired.x.coerceIn(-maxX, maxX), desired.y.coerceIn(-maxY, maxY))
+        }
         LaunchedEffect(image.id, recordId) {
             try { large = ConversationImageStore.load(context, recordId, image, large = true) }
             catch (e: CancellationException) { throw e }
@@ -70,9 +86,15 @@ internal fun ConversationImage(image: ConversationImageRef, recordId: String?, c
             Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
                 Box(Modifier.fillMaxSize().padding(16.dp)) {
                     val displayed = remember(large) { large.asImageBitmap() }
-                    Image(displayed, label, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+                    Image(displayed, label, Modifier.fillMaxSize().onSizeChanged { size = it }.transformable(transform)
+                        .graphicsLayer { scaleX = zoom; scaleY = zoom; translationX = offset.x; translationY = offset.y }, contentScale = ContentScale.Fit)
                     IconButton(onClick = { expanded = false }, modifier = Modifier.align(Alignment.TopEnd)) {
                         Icon(Icons.Outlined.Close, stringResource(android.R.string.cancel))
+                    }
+                    Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
+                        ConversationSaveButton("Codex-image-${image.id.take(8)}.png", image = true) {
+                            ConversationSaveContent.Bytes(ConversationImageStore.original(context, recordId, image))
+                        }
                     }
                 }
             }

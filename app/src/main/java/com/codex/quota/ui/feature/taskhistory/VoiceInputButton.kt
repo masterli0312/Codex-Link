@@ -10,7 +10,7 @@ import android.speech.SpeechRecognizer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.MicNone
 import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -118,7 +118,7 @@ internal fun VoiceInputButton(enabled: Boolean, onResult: (String) -> Unit, onEr
         }
         else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) start()
         else permission.launch(Manifest.permission.RECORD_AUDIO)
-    }) { Icon(if (listening) Icons.Outlined.StopCircle else Icons.Outlined.Mic,
+    }) { Icon(if (listening) Icons.Outlined.StopCircle else Icons.Outlined.MicNone,
         stringResource(if (listening) R.string.remote_voice_stop else R.string.remote_voice),
         tint = if (listening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
     if (offerOffline) AlertDialog(onDismissRequest = { if (!downloading) offerOffline = false },

@@ -5,6 +5,44 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ConversationIndexTest {
+    @Test fun aRejectedSyncNeverValidatesTheOldCachedContent() {
+        val pending = record("current").copy(contentValidatedAt = 500,
+            remoteState = RemoteConversationState(RemoteCommand("request", "send", "host", "thread", "chat", "old", 2000)))
+        val incoming = pending.copy(snapshot = pending.snapshot.copy(reply = "old persisted reply",
+            completed_at = "1970-01-01T00:00:01Z"))
+        assertFalse(ConversationSnapshotRules.regresses(pending, incoming.snapshot, nativeRewrite = true))
+        val merged = ConversationIndex.mergeSynced(pending, incoming, validatedAt = 100_000)
+        assertEquals(pending, merged)
+        assertFalse(ConversationOpeningRules.contentReady(merged, 99_000, true))
+    }
+
+    @Test fun anAcceptedNativeSyncValidatesExactlyTheAdoptedContent() {
+        val current = record("current").copy(contentValidatedAt = 500)
+        val incoming = current.copy(snapshot = current.snapshot.copy(reply = "fresh reply",
+            completed_at = "1970-01-01T00:00:03Z"))
+        val merged = ConversationIndex.mergeSynced(current, incoming, validatedAt = 100_000)
+        assertEquals(incoming.snapshot, merged.snapshot)
+        assertEquals(100_000L, merged.contentValidatedAt)
+        assertTrue(ConversationOpeningRules.contentReady(merged, 99_000, true))
+        assertEquals(100_000L, ConversationIndex.mergeSynced(null, incoming, validatedAt = 100_000).contentValidatedAt)
+    }
+
+    @Test fun nativeUpdatesOfTheActivePhoneTurnAreDisplayedWithoutReleasingTheRequest() {
+        val ref = RemoteThreadRef("host", "thread", "active")
+        val command = RemoteCommand("request", "send", "host", "thread", "chat", "old", 2000, "continue")
+        val event = RemoteEvent("event", "request", "host", "thread", "chat", "running", 1, 3000, turn_id = "active")
+        val current = record("current").copy(remoteState = RemoteConversationState(command, event),
+            snapshot = TaskConversationSnapshot(conversation_id = "chat", running = true, thread_ref = ref,
+                completed_at = "1970-01-01T00:00:03Z",
+                messages = listOf(TaskConversationMessage("assistant", "partial", "active:a"))))
+        val fresh = current.copy(snapshot = current.snapshot.copy(reply = "partial and new content",
+            messages = listOf(TaskConversationMessage("assistant", "partial and new content", "active:a"))))
+        val merged = ConversationIndex.mergeSynced(current, fresh)
+        assertEquals(fresh.snapshot, merged.snapshot)
+        assertEquals(current.remoteState, merged.remoteState)
+        assertTrue(ConversationIndex.hasPendingTurn(merged))
+    }
+
     @Test fun anAuthenticatedCompletedWatchReleasesTheSamePendingTurn() {
         val ref = RemoteThreadRef("host", "thread", "running-turn")
         val command = RemoteCommand("request", "send", "host", "thread", "chat", "previous", 1000, "continue")
@@ -23,7 +61,9 @@ class ConversationIndexTest {
         assertEquals("received", merged.remoteState?.transport)
         assertEquals(current, ConversationIndex.mergeSynced(current, synced.copy(snapshot = synced.snapshot.copy(remote_ref = ref.copy(baseline_turn = "previous")))))
         assertEquals(current, ConversationIndex.mergeSynced(current, synced.copy(snapshot = synced.snapshot.copy(remote_ref = ref.copy(host_id = "other")))))
-        assertEquals(current, ConversationIndex.mergeSynced(current, synced.copy(snapshot = synced.snapshot.copy(running = true))))
+        val stillRunning = ConversationIndex.mergeSynced(current, synced.copy(snapshot = synced.snapshot.copy(running = true)))
+        assertEquals(synced.snapshot.copy(running = true), stillRunning.snapshot)
+        assertEquals(current.remoteState, stillRunning.remoteState)
         val unconfirmed = current.copy(remoteState = current.remoteState?.copy(event = null))
         assertEquals(unconfirmed, ConversationIndex.mergeSynced(unconfirmed, synced))
     }
@@ -257,4 +297,18 @@ class ConversationIndexTest {
         assertEquals("running", ConversationIndex.mergeNotification(current, completion.copy(snapshot = completion.snapshot.copy(
             remote_ref = ref.copy(baseline_turn = "different"))), true).remoteState?.event?.status)
     }
+    @Test fun aFreshShortProjectionVerifiesTheCurrentTurnWithoutClearingItsRicherContent() {
+        val ref = RemoteThreadRef("host","thread","active")
+        val current = record("current").copy(hasFullSnapshot = true, contentValidatedAt = 10,
+            snapshot = TaskConversationSnapshot(conversation_id = "chat", running = true, thread_ref = ref,
+                messages = listOf(TaskConversationMessage("assistant","full streamed reply","active:a",position = 1))))
+        val shorter = current.copy(snapshot = current.snapshot.copy(messages = listOf(TaskConversationMessage("assistant","full","active:a",position = 1))))
+        val merged = ConversationIndex.mergeSynced(current,shorter,validatedAt = 100)
+        assertEquals(current.snapshot,merged.snapshot)
+        assertEquals(100L,merged.contentValidatedAt)
+        assertTrue(ConversationOpeningRules.contentReady(merged,50,true))
+        val other = shorter.copy(snapshot = shorter.snapshot.copy(thread_ref = ref.copy(baseline_turn = "earlier"), messages = listOf(TaskConversationMessage("assistant","older reply","earlier:a",position = 1))))
+        assertEquals(current.contentValidatedAt,ConversationIndex.mergeSynced(current,other,validatedAt = 100).contentValidatedAt)
+    }
+
 }

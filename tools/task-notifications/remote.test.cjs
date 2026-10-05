@@ -3,6 +3,23 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {commandTopic,eventTopic,encode,decode,validateCommand,resolveThread,RemoteController}=require('../../app/src/main/assets/task-notifications/remote-core.cjs');
 const key=Buffer.alloc(32,9).toString('base64'),host=crypto.randomUUID(),thread=crypto.randomUUID();
 const hash=s=>crypto.createHash('sha256').update(s).digest('hex');
+test('steer acknowledgement bypasses an in-flight snapshot and falls back without repeating the command',async()=>{
+ const {SteerReceiptPublisher}=require('../../app/src/main/assets/task-notifications/remote.cjs');
+ let finishSnapshot,releaseReceipt;
+ const snapshot=new Promise(resolve=>finishSnapshot=resolve),sent=[],fallback=[];
+ const publisher=new SteerReceiptPublisher(async e=>{sent.push(e);await new Promise(resolve=>releaseReceipt=resolve);},(e,error)=>fallback.push(e),1);
+ const receipt={request_id:'first',status:'steered'};
+ assert.equal(publisher.submit(receipt),true);
+ assert.equal(sent[0],receipt); // Native snapshots are still blocked, but the receipt POST already began.
+ assert.equal(publisher.submit({request_id:'other',status:'running'}),false);
+ assert.equal(publisher.submit(receipt),true);assert.equal(sent.length,1); // Duplicate receipts cannot occupy another lane.
+ assert.equal(publisher.submit({request_id:'second',status:'steered'}),false);
+ releaseReceipt();await publisher.idle();assert.equal(fallback.length,0);
+ finishSnapshot();await snapshot;
+ const failed=new SteerReceiptPublisher(async()=>{throw Error('fixture transport');},e=>fallback.push(e));
+ assert.equal(failed.submit(receipt),true);await failed.idle();assert.deepEqual(fallback,[receipt]);
+ failed.close();assert.equal(failed.submit(receipt),false);
+});
 test('provider failures are categorized without relaying private error text',()=>{
  const {providerFailure}=require('../../app/src/main/assets/task-notifications/remote-core.cjs');
  assert.equal(providerFailure({codexErrorInfo:{responseTooManyFailedAttempts:{httpStatusCode:429}},message:'SECRET'}),'RATE_LIMIT');
@@ -21,6 +38,49 @@ test('resuming an old thread omits its giant transcript without changing its pro
 });
 function command(extra={}){return {id:crypto.randomUUID(),action:'send',host_id:host,thread_id:thread,conversation_id:hash(thread),baseline_turn:'previous',text:'请继续',issued_at:Date.now(),...extra};}
 function fixture(){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'codex-usage-remote-test-'));fs.mkdirSync(path.join(dir,'sessions'));return {dir,cleanup(){assert.equal(path.dirname(dir),path.resolve(os.tmpdir()));assert.ok(path.basename(dir).startsWith('codex-usage-remote-test-'));fs.rmSync(dir,{recursive:true,force:true});}};}
+
+test('archive is acknowledged while a catalog read is busy, and concurrent mutations receive a bounded rejection',async()=>{
+ const f=fixture(),events=[],calls=[];let release,entered;
+ const started=new Promise(r=>entered=r);
+ const client={setHandlers(){},async connect(){},close(){},reject(){},async call(m,p){
+  calls.push(m);
+  if(m==='thread/read')return {thread:{id:thread,status:{type:'idle'}}};
+  assert.equal(m,'thread/archive');entered();await new Promise(r=>release=r);return {};
+ }};
+ const controller=new RemoteController({directory:f.dir,key,hostId:host,clientFactory:()=>client,emit:async e=>events.push(e)});
+ const first=command({action:'archive',read_thread_id:thread,text:''});
+ let pending;
+ try{
+  controller.libraryBusy=true;
+  pending=controller.handle(first);await started;
+  const second=command({action:'archive',read_thread_id:thread,text:''});
+  await controller.handle(second);
+  assert.equal(events.find(e=>e.request_id===second.id).error,'LIBRARY_BUSY');
+  release();await pending;
+  assert.equal(events.find(e=>e.request_id===first.id).status,'managed');
+  assert.equal(events.find(e=>e.request_id===first.id).managed_action,'archive');
+  assert.equal(calls.filter(m=>m==='thread/archive').length,1);
+  assert.equal(controller.libraryBusy,true);assert.equal(controller.managementBusy,false);
+ }finally{release?.();await pending;controller.close();f.cleanup();}
+});
+
+test('a rejected archive keeps a durable safe failure and duplicate delivery never retries it',async()=>{
+ const f=fixture(),events=[];let mutations=0,controller;
+ const client={setHandlers(){},async connect(){},close(){},reject(){},async call(m){
+  if(m==='thread/read')return {thread:{id:thread,status:{type:'notLoaded'}}};
+  if(m==='thread/list')return {data:[],nextCursor:null};
+  assert.equal(m,'thread/archive');
+  mutations++;throw Object.assign(Error('CODEX_RPC'),{rpcCode:-32600,rpcMessage:`no rollout found for thread id ${thread}`});
+ }};
+ const options={directory:f.dir,key,hostId:host,clientFactory:()=>client,emit:async e=>events.push(e)};
+ const c=command({action:'archive',read_thread_id:thread,text:''});
+ try{
+  controller=new RemoteController(options);await controller.handle(c);
+  assert.equal(events.at(-1).status,'failed');assert.equal(events.at(-1).error,'NO_ARCHIVABLE_RECORD');
+  controller.close();controller=new RemoteController(options);await controller.handle(c);
+  assert.equal(mutations,1);assert.equal(events.at(-1).error,'NO_ARCHIVABLE_RECORD');
+ }finally{controller?.close();f.cleanup();}
+});
 
 test('watch recovers a missed terminal event without rolling back a newer live delta',async()=>{
  const f=fixture(),events=[];let latest='old',status='idle',duringRead;
@@ -219,7 +279,11 @@ test('shared watch publishes native deltas before persistence and abstains from 
  const controller=new RemoteController({directory:f.dir,key,hostId:host,clientFactory:()=>client,emit:async e=>events.push(e)});
  try{
   await controller.handle(command({action:'read',read_thread_id:thread,watch:true,text:''}));
-  notify('turn/started',{threadId:thread,turn:{id:'desktop-live',status:'inProgress'}});
+  notify('turn/started',{threadId:thread,turn:{id:'desktop-live',status:'inProgress',items:[
+   {id:'question',type:'userMessage',content:[{type:'text',text:'desktop input'}]}]}});
+  assert.equal(events.at(-1).snapshot.messages.at(-1).text,'desktop input'); // No batching timer for a new input.
+  notify('item/completed',{threadId:thread,turnId:'desktop-live',item:{id:'extra',type:'userMessage',content:[{type:'text',text:'steered input'}]}});
+  assert.equal(events.at(-1).snapshot.messages.at(-1).text,'steered input');
   notify('item/agentMessage/delta',{threadId:thread,turnId:'desktop-live',itemId:'answer',delta:'live before save'});
   request(10,'item/commandExecution/requestApproval',{threadId:thread});
   await new Promise(r=>setTimeout(r,240));
@@ -619,7 +683,7 @@ test('desktop steering uses the exact watched turn, never starts a turn, and rej
  }finally{controller.close();f.cleanup();}
 });
 
-test('promoting a queued instruction keeps its expected native turn even if another queue starts during acknowledgement',async()=>{
+test('promoted steering refuses to send when its expected turn ends during acknowledgement',async()=>{
  const f=fixture(),client=fakeClient(),events=[],turns=[];let trigger=false,controller;
  controller=new RemoteController({directory:f.dir,key,hostId:host,clientFactory:()=>client,resolve:()=>({cwd:f.dir}),emit:async e=>{
   events.push(e);if(trigger&&e.status==='unknown'&&e.error==='STEER_UNCONFIRMED')controller.active.turn='another-turn';
@@ -629,7 +693,7 @@ test('promoting a queued instruction keeps its expected native turn even if anot
   const original=command();await controller.handle(original);
   const q=command({action:'queue',target_id:original.id,expected_turn_id:'new-turn',text:'exact-turn fixture'});await controller.handle(q);
   trigger=true;await controller.handle(command({action:'steer',target_id:original.id,expected_turn_id:'new-turn',queue_id:q.id,text:q.text}));
-  assert.deepEqual(turns,['new-turn']);assert.equal(client.starts,1);
+  assert.deepEqual(turns,[]);assert.equal(client.starts,1);assert.equal(events.at(-1).error,'STEER_REJECTED');
  }finally{controller.close();f.cleanup();}
 });
 
@@ -766,4 +830,18 @@ test('no-project creates one real thread in its own workspace with selected perm
   assert.equal(creates,1);assert.equal(client.starts,1);assert.equal(controller.active.actualThread,actual);
   assert.equal(events.at(-1).status,'running');assert.ok(fs.statSync(chosenCwd).isDirectory());
  }finally{controller?.close();f.cleanup();}
+});
+
+
+test('status for a missing follow-up returns an explicit outcome without replaying input',async()=>{
+ const f=fixture(),events=[];let calls=0;
+ const controller=new RemoteController({directory:f.dir,key,hostId:host,clientFactory:()=>{calls++;throw Error('must not execute');},emit:async e=>events.push(e)});
+ try {
+  const original=command({action:'steer'});
+  await controller.handle(command({action:'status',text:'',target_id:original.id}));
+  assert.equal(events.length,1);assert.equal(events[0].request_id,original.id);
+  assert.equal(events[0].status,'unknown');assert.equal(events[0].error,'REQUEST_NOT_FOUND');
+  assert.equal(events[0].thread_id,thread);assert.equal(events[0].conversation_id,hash(thread));
+  assert.equal(calls,0);assert.equal(controller.journal[original.id],undefined);
+ }finally{controller.close();f.cleanup();}
 });

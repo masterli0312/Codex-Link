@@ -55,6 +55,23 @@ class CommandDispatcher {
   close(){this.closed=true;}
   async idle(){await Promise.all([...this.pending.values()].map(p=>p.promise));}
 }
+// A steer is already committed to the native turn before this receipt exists.
+// Publish it immediately on a separate bounded lane, so a large snapshot POST
+// cannot delay the phone's confirmation. No command is replayed here.
+class SteerReceiptPublisher {
+  constructor(publish,onFailure=()=>{},limit=8){this.publish=publish;this.onFailure=onFailure;this.limit=limit;this.pending=new Map();this.closed=false;}
+  submit(event){
+    if(this.closed||event.status!=='steered')return false;
+    if(this.pending.has(event.request_id))return true;
+    if(this.pending.size>=this.limit)return false;
+    const entry={promise:null};this.pending.set(event.request_id,entry);
+    try{entry.promise=Promise.resolve(this.publish(event));}catch(error){entry.promise=Promise.reject(error);}
+    entry.promise=entry.promise.catch(error=>this.onFailure(event,error)).finally(()=>this.pending.delete(event.request_id));
+    return true;
+  }
+  close(){this.closed=true;}
+  async idle(){await Promise.all([...this.pending.values()].map(entry=>entry.promise));}
+}
 async function subscribeCommands(url,onRow,{signal,fetchImpl=fetch,headerMs=15000,idleMs=75000}={}){
   const abort=new AbortController();let timer,response;
   const timeout=()=>abort.abort(Object.assign(Error('TRANSPORT_TIMEOUT'),{name:'TimeoutError'}));
@@ -80,12 +97,12 @@ function transportFailure(error){
 function createHealth(directory,clock=Date.now){
   // Local diagnostics have no URLs, identities, credentials, prompts or provider error text.
   const state={startedAt:clock(),connected:false,lastConnectAt:0,lastCommandAt:0,lastPublishedAt:0,
-    commandsReceived:0,commandsRejected:0,eventsPublished:0,queuedEvents:0,lastReceiveError:'',lastPublishError:'',lastCommandKind:'',lastEventKind:'',lastThreadCount:0};
-  const counters=new Set(['lastConnectAt','lastCommandAt','lastPublishedAt','commandsReceived','commandsRejected','eventsPublished','queuedEvents','lastThreadCount']);
+    commandsReceived:0,commandsRejected:0,eventsPublished:0,queuedEvents:0,lastReceiveError:'',lastPublishError:'',lastPublishStatus:0,lastCommandKind:'',lastEventKind:'',lastThreadCount:0};
+    const counters=new Set(['lastConnectAt','lastCommandAt','lastPublishedAt','commandsReceived','commandsRejected','eventsPublished','queuedEvents','lastThreadCount','lastPublishStatus']);
   const errors=new Set(['','NETWORK','TIMEOUT','HTTP','RATE_LIMIT','DAILY_LIMIT','OVERSIZE']);
   const kinds=new Set(['','send','create','stop','approve','answer_input','status','models','threads','read','history','activities','rename','archive','unarchive','queue','steer','cancel_queue','presence',
     'fork','forked','accepted','running','approval','input_required','completed','interrupted','failed','unknown','snapshot','managed','queued','steered','cancelled',
-    'goal_read','goal_start','goal_pause','goal_resume','goal_clear','goal','session_info','skills']);
+    'goal_read','goal_start','goal_pause','goal_resume','goal_clear','goal','session_info','skills','image','file','thread_activity']);
   return {snapshot:()=>({...state}),update(patch){
     for(const [key,value] of Object.entries(patch)){
       if(counters.has(key)&&Number.isSafeInteger(value)&&value>=0)state[key]=value;
@@ -156,13 +173,29 @@ async function main(directory=__dirname){
   const abort=new AbortController(),outbox=new Map(),resets=new StreamResetTracker(),health=createHealth(directory);let closing=false;
   health.update({});
   const events=eventTopic(config.endpoint,config.contentKey,config.remoteHostId),commands=commandTopic(config.endpoint,config.contentKey,config.remoteHostId);
+  const receipts=new SteerReceiptPublisher(async event=>{
+    await publishEvent(events,config.contentKey,event);
+    health.update({lastPublishedAt:Date.now(),eventsPublished:health.snapshot().eventsPublished+1,lastEventKind:event.status});
+  },(event,error)=>{
+    outbox.set(event.request_id,event);
+    health.update({queuedEvents:outbox.size,lastPublishError:transportFailure(error),lastPublishStatus:Number.isInteger(error.status)?error.status:0});
+  });
   const controller=new RemoteController({directory,key:config.contentKey,hostId:config.remoteHostId,endpoint:config.endpoint,
+    questionFactory:thread=>new (require('./conversation-questions.cjs').DesktopQuestionReader)(config.codexHome,thread),
     clientFactory:()=>createCodexClient(config),resolve:c=>resolveThread(config,c),
     recover:(thread,turn)=>readSnapshot(config,thread,turn),readLocal:thread=>readLatestSnapshot(config,thread),
     readRevision:thread=>rolloutRevision(config,thread),readContext:thread=>require('./task-content.cjs').readContextUsage(config,thread),emit:async event=>{
+      if(receipts.submit(event))return;
       pruneOutbox(outbox);resets.request(event);outbox.set(event.request_id,event);health.update({queuedEvents:outbox.size,lastEventKind:event.status,lastThreadCount:event.threads?.length||0});}});
+  if(config.appServerUrl)await controller.restoreSharedTask();
   const dispatcher=new CommandDispatcher(c=>controller.handle(c),()=>health.update({commandsRejected:health.snapshot().commandsRejected+1}));
-  const shutdown=()=>{if(closing)return;closing=true;health.update({connected:false});dispatcher.close();abort.abort();controller.close();fs.closeSync(lease);try{if(fs.readFileSync(lock,'utf8')===String(process.pid))fs.unlinkSync(lock);}catch{}};
+  const activityWatcher=require('./completion-watch.cjs').watchCompletions(config.codexHome,{
+    onActivity:row=>controller.emit({id:require('node:crypto').randomUUID(),request_id:row.thread,host_id:config.remoteHostId,
+      thread_id:row.thread,conversation_id:require('node:crypto').createHash('sha256').update(row.thread).digest('hex'),
+      status:'thread_activity',seq:++controller.seq,at:row.at,reply:'',turn_id:row.turn,activity_running:row.running,activity_completed:row.completed}),
+    onCompletion:async(payload,file,end)=>{const notify=require('./notify.cjs');notify.enqueueCompletion(config,directory,payload,file,end);await notify.main(['--drain'],directory);}
+  });
+  const shutdown=()=>{if(closing)return;closing=true;health.update({connected:false});activityWatcher.close();dispatcher.close();receipts.close();abort.abort();controller.close();fs.closeSync(lease);try{if(fs.readFileSync(lock,'utf8')===String(process.pid))fs.unlinkSync(lock);}catch{}};
   process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);
   const monitor=setInterval(()=>{try{const latest=JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));
     if(!latest.remoteEnabled||latest.contentKey!==config.contentKey||latest.remoteHostId!==config.remoteHostId||latest.endpoint!==config.endpoint||latest.appServerUrl!==config.appServerUrl)shutdown();
@@ -173,8 +206,8 @@ async function main(directory=__dirname){
     await publishEvent(events,config.contentKey,compactFrame(published.get(id),resets.frame(e)));resets.acknowledge(e);published.set(id,e);
     if(published.size>64)published.delete(published.keys().next().value);
     if(e.status==='running')lastLivePublish=Date.now();if(outbox.get(id)===e)outbox.delete(id);
-    health.update({lastPublishedAt:Date.now(),eventsPublished:health.snapshot().eventsPublished+1,queuedEvents:outbox.size,lastPublishError:''});
-  }catch(error){health.update({lastPublishError:transportFailure(error)});await wait(error.retryAfter||5000,abort.signal);break;}}await wait(SENDER_IDLE_MS,abort.signal);}})();
+    health.update({lastPublishedAt:Date.now(),eventsPublished:health.snapshot().eventsPublished+1,queuedEvents:outbox.size,lastPublishError:'',lastPublishStatus:0});
+  }catch(error){health.update({lastPublishError:transportFailure(error),lastPublishStatus:Number.isInteger(error.status)?error.status:0});await wait(error.retryAfter||5000,abort.signal);break;}}await wait(SENDER_IDLE_MS,abort.signal);}})();
   let backoff=2000;
   try{while(!closing){try{
     await subscribeCommands(commands+'/json?since='+Math.floor((Date.now()-120000)/1000),async row=>{
@@ -190,7 +223,7 @@ async function main(directory=__dirname){
     },{signal:abort.signal});
     health.update({connected:false});if(!closing)await wait(backoff,abort.signal);
   }catch(error){health.update({connected:false,...(!closing?{lastReceiveError:transportFailure(error)}:{})});if(!closing)await wait(retryDelay(error,backoff),abort.signal);backoff=Math.min(backoff*2,60000);}}}
-  finally{clearInterval(monitor);shutdown();await sender;}
+  finally{clearInterval(monitor);shutdown();await Promise.all([sender,receipts.idle()]);}
 }
 if(require.main===module)main().catch(()=>{process.exitCode=1;});
-module.exports={main,publishEvent,readStream,downloadCommand,createHealth,transportFailure,subscribeCommands,CommandDispatcher,retryDelay,pruneOutbox};
+module.exports={main,publishEvent,readStream,downloadCommand,createHealth,transportFailure,subscribeCommands,CommandDispatcher,SteerReceiptPublisher,retryDelay,pruneOutbox};

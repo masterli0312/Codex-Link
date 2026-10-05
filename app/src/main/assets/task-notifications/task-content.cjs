@@ -127,7 +127,8 @@ function readSnapshot(config,id,turn,knownFile,end){
       if(p.role==='assistant')images.push(...projectImages(id,{type:'agentMessage',text},cwd));
       if(text.trim()||images.length){
         const bounded=limitText(text,16384);if(bounded!==text)truncated=true;
-        messages.push({role:p.role,text:bounded,...(images.length?{images:images.slice(0,3)}:{})});
+        const files=p.role==='assistant'?require('./conversation-files.cjs').projectFiles(id,{type:'agentMessage',text},cwd):[];
+        messages.push({role:p.role,text:bounded,...(files.length?{files}:{}),...(images.length?{images:images.slice(0,10)}:{})});
         if(messages.length>60){messages.shift();truncated=true;}
       }
     }

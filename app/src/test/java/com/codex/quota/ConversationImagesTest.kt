@@ -43,7 +43,7 @@ class ConversationImagesTest {
         assertTrue(old.images.isEmpty())
     }
     @Test fun malformedImageReferencesAreRejectedAtBothProtocolBoundaries() {
-        for (images in listOf(listOf(ConversationImageRef("../private")), List(4) { ConversationImageRef("$it".repeat(64)) }, List(2) { ConversationImageRef(id) })) {
+        for (images in listOf(listOf(ConversationImageRef("../private")), List(11) { ConversationImageRef(it.toString(16).repeat(64)) }, List(2) { ConversationImageRef(id) })) {
             val message = TaskConversationMessage("user", "", images = images)
             val snapshot = TaskConversationSnapshot(messages = listOf(message))
             val encrypted = TaskContentCipher.encrypt(RemoteProtocol.json.encodeToString(snapshot), key, "CodexUsage:1.1:fixture")

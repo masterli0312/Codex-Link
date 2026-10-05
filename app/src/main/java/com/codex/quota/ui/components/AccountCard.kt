@@ -25,6 +25,7 @@ import com.codex.quota.ui.util.localizedShortPlanName
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
+import com.codex.quota.ui.theme.UiMetrics
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -38,24 +39,14 @@ fun AccountCard(item: AccountWithUsage, onClick: () -> Unit, onSignInClick: () -
         ?: account.customRenewalDateEpochMs?.takeIf { it > 0L }
     val now = rememberQuotaClock()
     val signedOut = (usage?.status ?: account.authStatus) == AuthStatus.AUTHENTICATION_REQUIRED
-    Card(modifier = modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = stringResource(R.string.manage_accounts)), shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Card(modifier = modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = stringResource(R.string.manage_accounts)), shape = RoundedCornerShape(UiMetrics.CardRadius), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(UiMetrics.ContentGap)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(localizedAccountNickname(context, account), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(localizedShortPlanName(context, account.planType), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 StatusBadge(usage?.status ?: account.authStatus)
-            }
-            ActivationStatusText(item, now)
-            if (refreshing) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp)
-                    Text(stringResource(R.string.account_refreshing), style = MaterialTheme.typography.labelSmall)
-                }
-            } else if (refreshFeedback != null) {
-                Text(stringResource(refreshFeedback), style = MaterialTheme.typography.labelSmall,
-                    color = if (refreshFeedback == R.string.account_refresh_failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (usage?.errorMessage == CF_BLOCKED_ERROR) {
                 Text(stringResource(R.string.node_blocked_message), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
@@ -66,21 +57,21 @@ fun AccountCard(item: AccountWithUsage, onClick: () -> Unit, onSignInClick: () -
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     CircularQuotaGauge(usage?.remainingPercent?.takeUnless { usage.status != AuthStatus.AUTHENTICATED && usage.resetAtEpochMs?.let { reset -> reset <= now } == true }, size = 82.dp, strokeWidth = 8.dp)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        QuotaWindowLine(stringResource(R.string.quota_weekly), usage?.remainingPercent, usage?.resetAtEpochMs, now, status = usage?.status)
                         QuotaWindowLine(stringResource(R.string.quota_five_hour), usage?.fiveHourRemainingPercent, usage?.fiveHourResetAtEpochMs, now, status = usage?.status,
                             unavailableReason = if (usage?.isWeeklyQuotaExhausted == true) stringResource(R.string.five_hour_waiting_weekly) else null)
+                        QuotaWindowLine(stringResource(R.string.quota_weekly), usage?.remainingPercent, usage?.resetAtEpochMs, now, status = usage?.status)
                     }
                 }
-                Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(12.dp)).padding(vertical = 10.dp)) {
-                    Box(Modifier.weight(1f).clickable(onClick = onCreditClick), contentAlignment = Alignment.Center) {
+                Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(12.dp))) {
+                    Box(Modifier.weight(1f).clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onCreditClick).heightIn(min = UiMetrics.TouchTarget).padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
                         SummaryMetric(stringResource(R.string.official_credit), usage?.remainingCredits?.let { NumberFormat.getNumberInstance(LocalConfiguration.current.locales[0]).format(it) } ?: stringResource(R.string.value_unavailable))
                     }
-                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    Box(Modifier.weight(1f).heightIn(min = UiMetrics.TouchTarget).padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
                         SummaryMetric(stringResource(R.string.reset_opportunities), usage?.bankedResets?.toString() ?: stringResource(R.string.value_unavailable))
                     }
                 }
             }
-            HorizontalDivider()
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 val subscriptionText = subscriptionDate?.takeIf { it > 0L }?.let { date ->
                     val formattedDate = SimpleDateFormat(
@@ -98,7 +89,17 @@ fun AccountCard(item: AccountWithUsage, onClick: () -> Unit, onSignInClick: () -
                 } ?: stringResource(R.string.subscription_date_unavailable)
                 Text(subscriptionText, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.width(8.dp))
-                RelativeTimeText(account.lastSuccessfulSyncEpochMs, style = MaterialTheme.typography.labelSmall, now = now)
+                Box(Modifier.width(96.dp).heightIn(min = 20.dp), contentAlignment = Alignment.CenterEnd) {
+                    when {
+                        refreshing -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp)
+                            Text(stringResource(R.string.account_refreshing), style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                        }
+                        refreshFeedback == R.string.account_refresh_failed -> Text(stringResource(refreshFeedback),
+                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        else -> RelativeTimeText(account.lastSuccessfulSyncEpochMs, style = MaterialTheme.typography.labelSmall, now = now)
+                    }
+                }
             }
         }
     }

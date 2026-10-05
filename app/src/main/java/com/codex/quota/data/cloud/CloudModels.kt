@@ -15,10 +15,11 @@ data class CloudIdentity(val accountId: String, val workspaceId: String) {
     val turnId: String = "", val phase: String = "", val position: Int = -1) {
     val copyable: Boolean get() = role == "assistant" && text.isNotBlank() && phase !in setOf("commentary", "analysis")
 }
-@Serializable data class CloudTurnInfo(val id: String,val status: String,val durationMs: Long? = null)
+@Serializable data class CloudTurnInfo(val id: String,val status: String,val durationMs: Long? = null, val startedAt: Long? = null)
 @Serializable data class CloudDetails(val task: CloudTask, val messages: List<CloudMessage>, val diff: String = "", val historyCursor: String = "",
     val activeTurnId: String = "", val latestTurnId: String = "", val activities: List<com.codex.quota.notifications.task.RemoteActivity> = emptyList(),
-    val turns: List<CloudTurnInfo> = emptyList())
+    val turns: List<CloudTurnInfo> = emptyList(), val contextUsed: Long? = null, val contextLimit: Long? = null,
+    val olderMessages: List<CloudMessage> = emptyList(), val olderCursor: String? = null, val historyLimited: Boolean = false)
 @Serializable data class CloudPage(val items: List<CloudTask>, val cursor: String = "")
 @Serializable data class CloudSubmission(val fingerprint: String, val startedAt: Long, val taskId: String = "")
 

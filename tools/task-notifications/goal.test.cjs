@@ -9,7 +9,8 @@ function fixture(){
  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'codex-usage-goal-')),events=[],calls=[];
  let goal=null,closed=0,writer=false;
  const client={setHandlers(e,r){this.e=e;this.r=r;},async connect(){},async read(){return {thread:{id:thread,status:{type:'idle'}}};},
-  async resume(){if(writer)throw Object.assign(Error('RPC'),{rpcCode:-32600,rpcMessage:'thread already has an active writer SECRET'});},
+  async resume(id,local){calls.push(['resume',local]);if(writer)throw Object.assign(Error('RPC'),{rpcCode:-32600,rpcMessage:'thread already has an active writer SECRET'});},
+  async models(){return [{model:'fixture-model',supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high'}];},
   close(){closed++;},async reject(){},async interrupt(id,turn){calls.push(['interrupt',id,turn]);},
   async call(m,p){calls.push([m,p]);
    if(m==='thread/goal/get')return {goal};
@@ -92,6 +93,19 @@ test('pausing matches the stable goal generation while live usage updates advanc
    expected_goal_created_at:original.createdAt,expected_goal_hash:hash(original.objective)}));
   assert.equal(f.goal.status,'paused');assert.deepEqual(f.calls.find(([m])=>m==='interrupt'),['interrupt',thread,'own']);
  }finally{f.cleanup();}
+});
+test('goal activation validates and applies the selected model and reasoning effort',async()=>{
+ const f=fixture();try{
+  await f.controller.handle(command({model:'fixture-model',effort:'high'}));
+  const resumed=f.calls.find(([method])=>method==='resume')[1];
+  assert.equal(resumed.model,'fixture-model');assert.equal(resumed.resumeEffort,'high');
+  assert.equal(f.goal.status,'active');
+ }finally{f.cleanup();}
+ const invalid=fixture();try{
+  await invalid.controller.handle(command({model:'fixture-model',effort:'unsupported'}));
+  assert.equal(invalid.events.at(-1).error,'INVALID_MODEL_SELECTION');
+  assert.equal(invalid.calls.some(([method])=>method==='thread/goal/set'),false);
+ }finally{invalid.cleanup();}
 });
 test('an externally owned active goal is never reported as paused by another client',async()=>{
  const f=fixture();try{

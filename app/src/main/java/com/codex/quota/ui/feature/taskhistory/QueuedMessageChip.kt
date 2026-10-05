@@ -22,7 +22,7 @@ internal fun QueuedMessageChip(text: String, enabled: Boolean, canSteer: Boolean
         Surface(shape = RoundedCornerShape(24.dp),color = MaterialTheme.colorScheme.surfaceContainerLowest,
             border = BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier = Modifier.widthIn(max = 340.dp)) {
             Row(Modifier.padding(start = 14.dp),verticalAlignment = Alignment.CenterVertically,horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Outlined.PlaylistPlay,stringResource(R.string.remote_queued),Modifier.size(18.dp),tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Icon(Icons.Outlined.Tune,stringResource(R.string.remote_queued),Modifier.size(18.dp),tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(text,Modifier.weight(1f,fill = false),maxLines = 1,overflow = TextOverflow.Ellipsis,style = MaterialTheme.typography.bodyMedium)
                 Box {
                     IconButton(onClick = { menu = true },enabled = enabled) { Icon(Icons.Outlined.MoreHoriz,stringResource(R.string.conversation_actions),Modifier.size(20.dp)) }

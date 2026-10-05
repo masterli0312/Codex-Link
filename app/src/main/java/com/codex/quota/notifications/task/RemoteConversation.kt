@@ -23,11 +23,12 @@ data class RemoteCommand(
     val answers: Map<String, List<String>> = emptyMap(), val watch: Boolean = false, val mode: String = "",
     val objective: String = "", val token_budget: Long? = null, val expected_goal_updated_at: Long = 0,
     val expected_goal_created_at: Long = 0, val expected_goal_hash: String = "", val permission: String = "default",
-    val skill_ids: List<String> = emptyList(), val attachments: List<RemoteAttachment> = emptyList(), val stream_version: Int = 1, val image_id: String = ""
+    val skill_ids: List<String> = emptyList(), val attachments: List<RemoteAttachment> = emptyList(), val stream_version: Int = 1, val image_id: String = "", val file_id: String = ""
 ) { override fun toString() = "RemoteCommand(action=$action,id=$id)" }
 
 @Serializable
-data class RemoteModelOption(val model: String, val name: String, val efforts: List<String> = emptyList(), val default_effort: String = "")
+data class RemoteModelOption(val model: String, val name: String, val efforts: List<String> = emptyList(), val default_effort: String = "",
+    val description: String = "", val is_default: Boolean = false)
 
 @Serializable
 data class RemoteThreadSummary(val thread_id: String, val title: String = "", val updated_at: Long = 0,
@@ -68,6 +69,9 @@ object RemoteInputRules {
 data class RemoteReplyPatch(val base_seq: Long, val prefix_length: Int, val suffix: String, val sha256: String)
 
 @Serializable
+data class RemoteFileDownload(val file_id: String, val name: String, val url: String, val mime: String, val size: Long, val sha256: String, val format: String = "")
+
+@Serializable
 data class RemoteImageDownload(val image_id: String, val url: String, val mime: String, val size: Long, val sha256: String)
 
 @Serializable
@@ -81,13 +85,13 @@ data class RemoteEvent(
     val messages: List<TaskConversationMessage> = emptyList(), val next_cursor: String = "", val history_truncated: Boolean = false,
     val managed_thread_id: String = "", val managed_action: String = "", val managed_name: String = "",
     val active_input: String = "", val queued_entries: List<RemoteQueuedEntry> = emptyList(), val parent_request_id: String = "", val host_name: String = "", val attachment_pending: Boolean = false,
-    val user_input: RemoteInputRequest? = null,
+    val user_input: RemoteInputRequest? = null, val activity_running: Boolean? = null, val activity_completed: Boolean = false,
     val approval_kind: String = "", val approval_item_id: String = "", val approval_can_allow: Boolean = true,
     val activities: List<RemoteActivity> = emptyList(), val modes: List<String> = emptyList(),
     val forked_from_thread_id: String = "", val goal: RemoteGoal? = null, val goal_waiting: Boolean = false,
     val context_usage: RemoteContextUsage? = null, val five_hour: RemoteLimitWindow? = null, val weekly: RemoteLimitWindow? = null,
     val quota_error: String = "", val skills: List<RemoteSkill> = emptyList(),
-    val reply_patch: RemoteReplyPatch? = null, val reply_patch_pending: Boolean = false, val image: RemoteImageDownload? = null
+    val reply_patch: RemoteReplyPatch? = null, val reply_patch_pending: Boolean = false, val image: RemoteImageDownload? = null, val file: RemoteFileDownload? = null
 )
 
 @Serializable
@@ -123,11 +127,17 @@ object RemoteProtocol {
         val plain = TaskContentCipher.decrypt(wire["encrypted"]!!.jsonPrimitive.content, key, "CodexUsage:2.0:event:$id") ?: return null
         json.decodeFromString<RemoteEvent>(plain).also {
             require(it.id == id && uuid.matches(it.request_id) && it.seq > 0 && it.at > 0 &&
-                it.status in setOf("accepted", "running", "approval", "input_required", "completed", "interrupted", "failed", "unknown", "models", "threads", "snapshot", "history", "activities", "managed", "forked", "queued", "steered", "cancelled", "presence", "goal", "session_info", "skills", "image"))
+                it.status in setOf("accepted", "running", "approval", "input_required", "completed", "interrupted", "failed", "unknown", "models", "threads", "snapshot", "history", "activities", "managed", "forked", "queued", "steered", "cancelled", "presence", "goal", "session_info", "skills", "image", "file", "thread_activity"))
+            require(it.status != "thread_activity" || uuid.matches(it.host_id) && uuid.matches(it.thread_id) &&
+                it.request_id == it.thread_id && it.conversation_id == TaskInbox.hash(it.thread_id) &&
+                it.turn_id.length in 1..128 && it.activity_running != null && !(it.activity_running && it.activity_completed))
+            it.file?.let { file -> require(it.status == "file" && ConversationFileRules.valid(listOf(ConversationFileRef(file.file_id, file.name))) &&
+                file.size in 1..ConversationFileRules.MAX_BYTES.toLong() && file.sha256.matches(Regex("[a-f0-9]{64}")) &&
+                file.mime == "application/octet-stream" && file.url.length <= 2048 && file.format in setOf("", "stream-v1")) }
             it.image?.let { image -> require(it.status == "image" && image.image_id.matches(Regex("[a-f0-9]{64}")) &&
                 image.size in 1..ConversationImageRules.MAX_BYTES.toLong() && image.sha256.matches(Regex("[a-f0-9]{64}")) &&
                 image.mime in setOf("image/png", "image/jpeg", "image/webp", "image/gif") && image.url.length <= 2048) }
-            it.goal?.let { goal -> require(RemoteGoalRules.valid(goal, it.thread_id)) }
+            it.goal?.let { goal -> require(RemoteGoalRules.valid(goal, it.snapshot?.remote_ref?.thread_id ?: it.thread_id)) }
             require(!it.goal_waiting || it.goal?.status == "active" || it.attachment_pending)
             require(it.forked_from_thread_id.isBlank() || uuid.matches(it.forked_from_thread_id))
             require(it.status != "forked" || it.attachment_pending || it.snapshot?.remote_ref?.let { child ->
@@ -151,7 +161,7 @@ object RemoteProtocol {
             require(it.next_cursor.toByteArray().size <= 4096 && it.messages.size <= 60 && it.messages.all { m ->
                 m.role in setOf("user", "assistant") && m.text.toByteArray().size <= 16_384 && m.id.length <= 256 && m.position in -1..1_000_000 && ConversationImageRules.valid(m) })
             require(it.models.size <= 100 && it.models.all { m -> m.model.length in 1..128 && m.name.toByteArray().size <= 160 &&
-                m.efforts.size <= 16 && m.efforts.all { e -> e.length in 1..32 } && m.default_effort.length <= 32 })
+                m.efforts.size <= 16 && m.efforts.all { e -> e.length in 1..32 } && m.default_effort.length <= 32 && m.description.toByteArray().size <= 800 })
             require(it.modes.size <= 2 && it.modes.distinct().size == it.modes.size && it.modes.all { mode -> mode in setOf("plan", "default") })
             require(it.threads.size <= 100 && it.threads.all { t -> uuid.matches(t.thread_id) && t.title.toByteArray().size <= 240 &&
                 t.project_name.toByteArray().size <= 160 && t.project_path.toByteArray().size <= 1024 && !t.project_path.contains('\u0000') &&
@@ -226,7 +236,7 @@ object RemoteProtocol {
         return control(state.command, "answer_input").copy(input_id = input.id, expected_turn_id = input.turn_id, answers = answers)
     }
     fun control(c: RemoteCommand, action: String, approval: String = "", allow: Boolean = false) =
-        c.copy(id = UUID.randomUUID().toString(), action = action, issued_at = System.currentTimeMillis(), text = "", target_id = c.id, approval_id = approval, allow = allow, attachments = emptyList(), skill_ids = emptyList())
+        c.copy(id = UUID.randomUUID().toString(), action = action, issued_at = System.currentTimeMillis(), text = "", target_id = c.id, approval_id = approval, allow = allow, attachments = emptyList(), skill_ids = emptyList(), watch = false)
 }
 
 /** A branch is a new native identity. It must never overwrite or masquerade as its source. */

@@ -16,7 +16,7 @@ internal object RemoteFollowUpRules {
             query.action != "read" || !query.watch || query.thread_id != ref.thread_id || query.read_thread_id != ref.thread_id ||
             query.host_id != ref.host_id || query.conversation_id != record.snapshot.conversation_id || result.request_id != query.id ||
             result.host_id != query.host_id || result.thread_id != query.thread_id || result.conversation_id != query.conversation_id ||
-            result.status != "snapshot" || result.error.isNotBlank() || result.attachment_pending) return null
+            result.status !in setOf("snapshot", "input_required") || result.error.isNotBlank() || result.attachment_pending) return null
         return RemoteConversationState(query, result.copy(status = "running", turn_id = ref.baseline_turn))
     }
     fun desktop(record: TaskInboxRecord) = source(record)?.command?.action == "read"

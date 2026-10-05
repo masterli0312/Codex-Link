@@ -55,14 +55,14 @@ internal fun CloudEnvironmentManagementContent(environments: List<CloudEnvironme
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
-            if (environments.isNotEmpty()) Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+            if (environments.isNotEmpty()) com.codex.quota.ui.components.SectionSurface {
                 Column(Modifier.fillMaxWidth().selectableGroup()) {
                     environments.forEachIndexed { index, environment ->
                         Row(Modifier.fillMaxWidth().selectable(selectedId == environment.id, role = Role.RadioButton,
                             onClick = { onEdit(environment.id) }).padding(horizontal = 16.dp, vertical = 14.dp),
                             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Icon(Icons.Outlined.CloudQueue, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(environment.label.ifBlank { environment.id }, Modifier.weight(1f), maxLines = 2,
+                            com.codex.quota.ui.components.SectionIcon(Icons.Outlined.CloudQueue)
+                            Text(environment.label.ifBlank { stringResource(R.string.cloud_native_configuration) }, Modifier.weight(1f), maxLines = 2,
                                 overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
                             IconButton(onClick = { onEdit(environment.id) }) { Icon(Icons.Outlined.Tune, stringResource(R.string.cloud_native_configuration), Modifier.size(18.dp)) }
                         }

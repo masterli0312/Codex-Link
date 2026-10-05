@@ -14,7 +14,7 @@ internal class ConversationScrollHandle(val state: LazyListState,val browse: ()-
 /** Follow streamed growth, while a reader dragging into history keeps their place. */
 @Composable
 internal fun rememberCloudConversationScroll(thread: String, ready: Boolean, acceptedInput: String): ConversationScrollHandle {
-    val state = rememberLazyListState()
+    val state = key(thread) { rememberLazyListState() }
     var positioned by remember(thread) { mutableStateOf(false) }
     var follow by remember(thread) { mutableStateOf(true) }
     var dragging by remember(thread) { mutableStateOf(false) }

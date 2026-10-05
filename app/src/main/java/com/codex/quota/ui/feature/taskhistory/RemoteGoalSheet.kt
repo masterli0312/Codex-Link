@@ -6,6 +6,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -34,6 +37,8 @@ internal fun RemoteGoalSheet(id: String, record: TaskInboxRecord, onDismiss: () 
     var networkError by remember { mutableStateOf(false) }
     var busyError by remember { mutableStateOf(false) }
     var confirmation by remember { mutableStateOf<String?>(null) }
+    var expanded by rememberSaveable(id) { mutableStateOf(false) }
+    var advanced by rememberSaveable(id) { mutableStateOf(false) }
     var timedOut by remember(record.goalRequest?.id) { mutableStateOf(false) }
     fun operate(action: String) {
         if (publishing) return
@@ -49,7 +54,7 @@ internal fun RemoteGoalSheet(id: String, record: TaskInboxRecord, onDismiss: () 
     LaunchedEffect(record.goalRequest?.id) {
         record.goalRequest?.let { kotlinx.coroutines.delay((it.issued_at + 45_000 - System.currentTimeMillis()).coerceAtLeast(0)); timedOut = true }
     }
-    val root = record.remoteState?.takeIf { it.command.action in RemoteGoalRules.rootActions }
+    val root = record.remoteState?.takeIf { it.command.action in RemoteGoalRules.rootActions || it.event?.goal != null }
     val queried = record.goalResult?.takeIf { it.request_id == record.goalRequest?.id }
     val event = listOfNotNull(root?.event, queried).filter { !it.partial && !it.attachment_pending && it.error.isBlank() }.maxByOrNull { it.seq }
     val goal = event?.goal
@@ -64,8 +69,7 @@ internal fun RemoteGoalSheet(id: String, record: TaskInboxRecord, onDismiss: () 
                 Text(stringResource(R.string.remote_goal_title), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                 IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, stringResource(R.string.conversation_menu_close)) }
             }
-            Text(stringResource(R.string.remote_goal_description), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (pending) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (pending) Text(stringResource(R.string.remote_goal_loading), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (networkError || error != null || timedOut && queried == null) {
                 Text(stringResource(if (busyError) R.string.remote_busy else when (error) {
                     "GOAL_UNAVAILABLE" -> R.string.remote_goal_unavailable
@@ -74,19 +78,30 @@ internal fun RemoteGoalSheet(id: String, record: TaskInboxRecord, onDismiss: () 
                     "GOAL_CHANGED", "GOAL_ALREADY_EXISTS", "GOAL_NOT_PAUSED" -> R.string.remote_goal_changed
                     "GOAL_UNCONFIRMED", "DISCONNECTED" -> R.string.remote_goal_unconfirmed
                     "BUSY", "HOST_BUSY" -> R.string.remote_busy
+                    "INVALID_MODEL_SELECTION" -> R.string.remote_invalid_selection
                     "STALE" -> R.string.remote_stale
                     else -> R.string.remote_goal_read_failed
                 }), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
             if (goal != null) {
-                Text(stringResource(goalStatusLabel(goal.status)), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-                Text(goal.objective, style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(goalStatusLabel(goal.status)), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(goal.objective, style = MaterialTheme.typography.bodyMedium,
+                            maxLines = if (expanded) Int.MAX_VALUE else 4, overflow = TextOverflow.Ellipsis)
+                        TextButton(onClick = { expanded = !expanded }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)) {
+                            Text(stringResource(if (expanded) R.string.remote_goal_collapse else R.string.remote_goal_expand))
+                            Icon(if (expanded) Icons.Outlined.ExpandMore else Icons.Outlined.ChevronRight, null, Modifier.size(18.dp))
+                        }
+                    }
+                }
                 Text(stringResource(R.string.remote_goal_usage, goal.tokens_used, goal.time_used_seconds), style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 goal.token_budget?.let { Text(stringResource(R.string.remote_goal_budget_value, it), style = MaterialTheme.typography.bodySmall) }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (goal.status in setOf("active", "paused")) FilledTonalButton(onClick = { confirmation = if (goal.status == "paused") "goal_resume" else "goal_pause" },
-                        enabled = !pending && root?.event?.attachment_pending != true) {
+                        enabled = !pending && root?.event?.attachment_pending != true,
+                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh, contentColor = MaterialTheme.colorScheme.onSurface)) {
                         Text(stringResource(if (goal.status == "paused") R.string.remote_goal_resume else R.string.remote_goal_pause))
                     }
                     OutlinedButton(onClick = { confirmation = "goal_clear" }, enabled = !pending) { Text(stringResource(R.string.remote_goal_clear)) }
@@ -94,15 +109,20 @@ internal fun RemoteGoalSheet(id: String, record: TaskInboxRecord, onDismiss: () 
             } else if (event != null) {
                 OutlinedTextField(objective, { if (RemoteGoalRules.validObjective(it) || it.isBlank()) objective = it }, Modifier.fillMaxWidth(),
                     label = { Text(stringResource(R.string.remote_goal_objective)) }, minLines = 3, maxLines = 6, enabled = editable)
-                OutlinedTextField(budget, { if (it.length <= 10 && it.all(Char::isDigit)) budget = it }, Modifier.fillMaxWidth(),
+                TextButton(onClick = { advanced = !advanced }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                    Text(stringResource(R.string.remote_goal_budget_optional))
+                    Icon(if (advanced) Icons.Outlined.ExpandMore else Icons.Outlined.ChevronRight, null, Modifier.size(18.dp))
+                }
+                if (advanced) OutlinedTextField(budget, { if (it.length <= 10 && it.all(Char::isDigit)) budget = it }, Modifier.fillMaxWidth(),
                     label = { Text(stringResource(R.string.remote_goal_budget_optional)) }, singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), enabled = editable)
                 Button(onClick = { confirmation = "goal_start" }, enabled = editable && RemoteGoalRules.validObjective(objective.trim()) &&
-                    (budget.isBlank() || budget.toLongOrNull()?.let { it in 1..2_000_000_000 } == true), modifier = Modifier.fillMaxWidth()) {
+                    (budget.isBlank() || budget.toLongOrNull()?.let { it in 1..2_000_000_000 } == true), modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.surface)) {
                     Text(stringResource(R.string.remote_goal_start))
                 }
             }
-            TextButton(onClick = { operate("goal_read") }, enabled = !publishing, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.conversation_refresh)) }
+            if (networkError || error != null || timedOut && queried == null) TextButton(onClick = { timedOut = false; operate("goal_read") }, enabled = !publishing) { Text(stringResource(R.string.conversation_refresh)) }
         }
     }
     confirmation?.let { action -> AlertDialog(onDismissRequest = { confirmation = null }, title = { Text(stringResource(R.string.remote_goal_title)) },

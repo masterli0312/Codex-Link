@@ -61,8 +61,6 @@ fun ConversationListScreen(onSettings: () -> Unit, onOpen: (String) -> Unit, onB
     }
     val inbox = remember { TaskInbox(context) }
     val records by listViewModel.records.collectAsStateWithLifecycle()
-    var clearDialog by remember { mutableStateOf(false) }
-    var info by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     var searching by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     var query by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
@@ -73,16 +71,21 @@ fun ConversationListScreen(onSettings: () -> Unit, onOpen: (String) -> Unit, onB
     var anchorId by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
     val computerStore = remember { ComputerConnectionStore(context) }
     val computers by listViewModel.computers.collectAsStateWithLifecycle()
+    val syncSelections by listViewModel.syncSelections.collectAsStateWithLifecycle()
     var selectedComputerId by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
     val selectedComputer = computers.firstOrNull { it.id == selectedComputerId }
+    val syncSelection = selectedComputer?.let { syncSelections?.get(ConversationSyncRules.scope(it)) }
+    var selectingSync by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    var savingSync by remember { mutableStateOf(false) }
+    var syncSelectionError by remember { mutableStateOf(false) }
     var computerMenu by remember { mutableStateOf(false) }
-    var selectedProject by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
+    val selectedProject = ConversationEnvironmentRules.NO_PROJECT
     var newConversation by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     var inputFocused by remember { mutableStateOf(false) }
     val composing = newConversation || inputFocused
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
-    var projectFilter by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
+    val projectFilter = ""
     var computerOnly by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     var syncError by remember { mutableStateOf(false) }
     var manualRequestId by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
@@ -124,14 +127,7 @@ fun ConversationListScreen(onSettings: () -> Unit, onOpen: (String) -> Unit, onB
     }
     // Opening is owned by a current row click or the new-thread composer. Restored
     // catalog/read results update the cache; they must never navigate on their own.
-    val projects = remember(selectedAnchor?.id, selectedAnchor?.threadCatalog, selectedComputer?.id) {
-        ConversationEnvironmentRules.projects(selectedAnchor, selectedComputer)
-    }
-    LaunchedEffect(projects, selectedAnchor?.id, selectedProject) {
-        if (selectedProject.isBlank() || projects.isNotEmpty() || selectedAnchor?.libraryResult?.status == "threads")
-            selectedProject = ConversationEnvironmentRules.resolveProject(selectedProject, projects)
-    }
-    fun startConversation() { newConversation = true; showArchived = false; searching = false; query = ""; projectFilter = "" }
+    fun startConversation() { newConversation = true; showArchived = false; searching = false; query = "" }
     fun leaveComposer() { focusManager.clearFocus(force = true); keyboard?.hide(); inputFocused = false; newConversation = false }
     BackHandler(composing) { leaveComposer() }
     BackHandler(!composing) { onBack() }
@@ -141,7 +137,7 @@ fun ConversationListScreen(onSettings: () -> Unit, onOpen: (String) -> Unit, onB
     }
     val lifecycleOwner = LocalLifecycleOwner.current
     val refreshList by rememberUpdatedState({
-        if (RemoteCatalogRules.shouldRefresh(selectedAnchor, showArchived, query.trim().take(80), System.currentTimeMillis()))
+        if ((selectingSync || !syncSelection?.ids.isNullOrEmpty()) && RemoteCatalogRules.shouldRefresh(selectedAnchor, showArchived, query.trim().take(80), System.currentTimeMillis()))
             query("threads", manual = false)
     })
     LaunchedEffect(anchorId, remoteEnabled, lifecycleOwner) {
@@ -165,23 +161,73 @@ fun ConversationListScreen(onSettings: () -> Unit, onOpen: (String) -> Unit, onB
     LaunchedEffect(computers) {
         if (computers.none { it.id == selectedComputerId }) selectedComputerId = computers.firstOrNull()?.id.orEmpty()
     }
-    val catalog = if (remoteEnabled && anchor?.threadCatalogArchived == showArchived) anchor?.threadCatalog.orEmpty() else emptyList()
-    val presentationKey = listOf(selectedComputerId, anchor?.endpointHash.orEmpty(), query, showArchived.toString(), computerOnly.toString(), projectFilter)
+    val catalog = if (remoteEnabled) syncSelection?.conversations.orEmpty().filter { it.archived == showArchived }.map { it.thread } else emptyList()
+    val syncedRecords = remember(records, computers, syncSelections) { records?.filter { record -> computers.any { computer ->
+        syncSelections?.get(ConversationSyncRules.scope(computer))?.let { ConversationSyncRules.allows(record, computer, it) } == true
+    } } }
+    val selectionKey = remember(syncSelections) { syncSelections?.mapValues { (_, selection) ->
+        selection.conversations.map { it.thread.thread_id to it.archived }.sortedBy { it.first }
+    }?.hashCode().toString() }
+    val presentationKey = listOf(selectedComputerId, anchor?.endpointHash.orEmpty(), query, showArchived.toString(), computerOnly.toString(), projectFilter, selectionKey)
     val presentation by key(presentationKey) {
-        produceState(listViewModel.presentationFor(presentationKey), records, catalog, anchor?.endpointHash,
+        produceState(listViewModel.presentationFor(presentationKey), syncedRecords, catalog, anchor?.endpointHash,
             query, showArchived, selectedComputer?.id, computerOnly, projectFilter) {
             val built = withContext(Dispatchers.Default) {
-                ConversationListPresentation.build(records.orEmpty(), catalog, anchor?.endpointHash, query, showArchived,
+                ConversationListPresentation.build(syncedRecords.orEmpty(), catalog, anchor?.endpointHash, query, showArchived,
                     selectedComputer, computerOnly, projectFilter)
             }
             value = built
-            if (records != null) listViewModel.rememberPresentation(presentationKey, built)
+            if (records != null && syncSelections != null) listViewModel.rememberPresentation(presentationKey, built)
         }
     }
     val manualSyncing = syncing && queryRequest?.id == manualRequestId
     val manualSyncFailed = manualRequestId.isNotBlank() && queryRequest?.id == manualRequestId &&
         (queryDelayed || resultMatches && (result?.error?.isNotBlank() == true || result?.partial == true))
     val rows = presentation.rows
+    var revealedRow by remember(selectedComputerId, showArchived, query, projectFilter) { mutableStateOf<String?>(null) }
+    var renameRow by remember(selectedComputerId) { mutableStateOf<DesktopRowTarget?>(null) }
+    var pendingRow by remember { mutableStateOf<String?>(null) }
+    var rowError by remember(selectedComputerId) { mutableStateOf<Int?>(null) }
+    fun rowAction(key: String, target: DesktopRowTarget, action: String, name: String = "") {
+        if (pendingRow != null) return
+        pendingRow = key
+        rowError = null
+        scope.launch {
+            try {
+                desktopRowAction(context, target, action, name)
+                if (action != "pin") query("threads", manual = false)
+            }
+            catch (_: kotlinx.coroutines.TimeoutCancellationException) { rowError = R.string.conversation_management_uncertain }
+            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (error: Exception) { rowError = when (error.message) {
+                "BUSY" -> R.string.remote_busy
+                "LIBRARY_BUSY" -> R.string.conversation_management_busy
+                "NO_ARCHIVABLE_RECORD" -> R.string.conversation_management_empty
+                "ARCHIVE_RECORD_MISSING", "MISSING_THREAD" -> R.string.conversation_management_missing
+                "MANAGEMENT_UNCONFIRMED" -> R.string.conversation_management_uncertain
+                else -> R.string.conversation_management_failed
+            } }
+            finally { pendingRow = null }
+        }
+    }
+    fun chooseSync() { leaveComposer(); showArchived = false; searching = false; query = ""; selectingSync = true; syncSelectionError = false }
+    if (selectingSync && selectedComputer != null && syncSelection != null) {
+        val available = anchor?.threadCatalog?.takeIf { anchor.threadCatalogArchived == false }.orEmpty()
+        ConversationSyncPicker(ConversationSyncRules.scope(selectedComputer), selectedComputer.name, syncSelection, available,
+            syncing, savingSync, syncSelectionError || manualSyncFailed,
+            more = anchor?.threadCatalogArchived == false && !anchor.threadCursor.isNullOrBlank(),
+            onSearch = { term -> query = term; query("threads") }, onMore = { query("threads", cursor = anchor?.threadCursor.orEmpty()) },
+            onSave = { ids, known ->
+                savingSync = true; syncSelectionError = false
+                scope.launch {
+                    try { listViewModel.saveSyncSelection(selectedComputer, ids, known); selectingSync = false; query = "" }
+                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (_: Exception) { syncSelectionError = true }
+                    finally { savingSync = false }
+                }
+            }, onBack = { selectingSync = false; query = "" })
+        return
+    }
     val pageColor = MaterialTheme.colorScheme.background
     val buttonColor = MaterialTheme.colorScheme.surface
     Scaffold(containerColor = pageColor, topBar = {
@@ -206,6 +252,8 @@ fun ConversationListScreen(onSettings: () -> Unit, onOpen: (String) -> Unit, onB
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
             if (!composing) {
+            rowError?.let { message -> Text(stringResource(message), Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
             if (syncError || manualSyncFailed) Text(stringResource(R.string.conversation_catalog_sync_failed),
                 Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             if (searching) OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
@@ -216,7 +264,7 @@ fun ConversationListScreen(onSettings: () -> Unit, onOpen: (String) -> Unit, onB
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp))
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                ConversationFilter(selected = !computerOnly, onClick = { computerOnly = false; projectFilter = "" }) {
+                ConversationFilter(selected = !computerOnly, onClick = { computerOnly = false }) {
                     Text(stringResource(R.string.conversation_all), fontSize = 14.sp)
                 }
                 ConversationFilter(selected = false, onClick = { cloudNew = false; cloudSelected = true }) {
@@ -240,7 +288,7 @@ fun ConversationListScreen(onSettings: () -> Unit, onOpen: (String) -> Unit, onB
                 DropdownMenu(computerMenu, { computerMenu = false }) {
                     computers.forEach { computer -> DropdownMenuItem(text = { Text(computer.name.ifBlank { stringResource(R.string.conversation_paired_computer) }) },
                         onClick = {
-                            selectedComputerId = computer.id; selectedProject = ""; projectFilter = ""; computerMenu = false
+                            selectedComputerId = computer.id; computerMenu = false
                             scope.launch { ComputerConnectionClient(context).probe(computer) }
                         }) }
                 }
@@ -248,6 +296,10 @@ fun ConversationListScreen(onSettings: () -> Unit, onOpen: (String) -> Unit, onB
             }
             if (selectedComputer?.confirmedUnreachable(now) == true) Text(stringResource(R.string.computer_unreachable),
                 Modifier.padding(horizontal = 20.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (remoteEnabled && selectedComputer != null) TextButton(onClick = ::chooseSync, modifier = Modifier.padding(horizontal = 12.dp)) {
+                Icon(Icons.Outlined.Checklist, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.conversation_sync))
+            }
             LazyColumn(Modifier.weight(1f), state = listState, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp)) {
                 if (records == null) item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -261,37 +313,19 @@ fun ConversationListScreen(onSettings: () -> Unit, onOpen: (String) -> Unit, onB
                         OutlinedButton(onClick = onSettings) { Text(stringResource(R.string.remote_configure)) }
                     }
                 } else {
-                    if (!showArchived && !searching) {
-                        item { Text(stringResource(R.string.conversation_projects), Modifier.padding(top = 12.dp, bottom = 12.dp),
-                            fontSize = 18.sp, fontWeight = FontWeight.SemiBold) }
-                        item {
-                            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(enabled = remoteEnabled && anchor != null) {
-                                selectedProject = ConversationEnvironmentRules.NO_PROJECT
-                                projectFilter = ""
-                                startConversation()
-                            }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                                Icon(Icons.Outlined.Computer, null, Modifier.size(24.dp)); Text(stringResource(R.string.conversation_chat), fontSize = 18.sp)
-                            }
-                        }
-                        items(projects.take(2), key = { "project:" + it.project_id }) { p ->
-                            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                                .background(if (projectFilter == p.project_id) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f) else Color.Transparent,
-                                    androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
-                                .clickable { selectedProject = p.project_id; projectFilter = if (projectFilter == p.project_id) "" else p.project_id }
-                                .padding(vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                                Icon(Icons.Outlined.FolderOpen, null, Modifier.size(24.dp))
-                                Text(p.project_name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 18.sp, modifier = Modifier.weight(1f))
-                            }
-                        }
-                    }
-                    item { Text(projects.firstOrNull { it.project_id == projectFilter }?.project_name ?: stringResource(R.string.conversation_recent), Modifier.padding(top = 28.dp, bottom = 12.dp),
+                    item { Text(stringResource(R.string.conversation_recent), Modifier.padding(top = 8.dp, bottom = 12.dp),
                         fontSize = 18.sp, fontWeight = FontWeight.SemiBold) }
-                    if (!presentation.hasResults) item { Text(stringResource(R.string.conversation_no_results), Modifier.padding(vertical = 24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    if (!presentation.hasResults) item { Text(stringResource(if (query.isBlank() && !showArchived) R.string.conversation_sync_empty else R.string.conversation_no_results), Modifier.padding(vertical = 24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 items(rows, key = { it.key }, contentType = { "conversation" }) { row ->
                     val record = row.record
                     val thread = row.thread
+                    val target = DesktopRowTarget(record, thread, selectedComputer, showArchived)
+                    val canManageRow = remoteEnabled && pendingRow == null && (record?.snapshot?.thread_ref != null || record?.snapshot?.remote_ref != null || thread != null && selectedComputer != null)
+                    ConversationSwipeRow(revealedRow == row.key, { revealedRow = row.key }, { if (revealedRow == row.key) revealedRow = null },
+                        pinned = record?.pinned == true, archived = showArchived, enabled = !creating && pendingRow == null,
+                        canManage = canManageRow, onPin = { rowAction(row.key, target, "pin") }, onRename = { renameRow = target },
+                        onArchive = { rowAction(row.key, target, if (showArchived) "unarchive" else "archive") }) {
                     // A background list refresh must not disable opening a conversation.
                     Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable(enabled = !openingThread && (record != null || !creating)) {
                         if (openingThread) return@clickable
@@ -316,53 +350,45 @@ fun ConversationListScreen(onSettings: () -> Unit, onOpen: (String) -> Unit, onB
                         Column(Modifier.weight(1f)) {
                             Text((record?.snapshot?.title ?: thread!!.title).ifBlank { context.getString(R.string.task_history_unnamed) }, style = MaterialTheme.typography.bodyLarge,
                                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            if (thread?.running == true || record?.let(ConversationIndex::hasPendingTurn) == true) Text(stringResource(R.string.remote_running), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         if (record?.pinned == true) Icon(Icons.Outlined.PushPin, null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        val updatedAt = row.updatedAt
-                        Text(conversationTime(updatedAt, now), style = MaterialTheme.typography.labelMedium, maxLines = 1,
+                        val ref = record?.snapshot?.thread_ref ?: record?.snapshot?.remote_ref
+                        val selected = syncSelections?.values?.flatMap { it.conversations }?.firstOrNull {
+                            it.thread.thread_id == (thread?.thread_id ?: ref?.thread_id)
+                        }
+                        val running = selected?.thread?.running ?: (thread?.running == true || record?.let(ConversationIndex::hasPendingTurn) == true)
+                        ConversationActivityIndicator(running, selected?.unread == true)
+                        val updatedAt = maxOf(row.updatedAt, selected?.completedAt ?: 0)
+                        if (!running) Text(conversationTime(updatedAt, now), style = MaterialTheme.typography.labelMedium, maxLines = 1,
                             overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 96.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                }
-                if (remoteEnabled && anchor?.threadCatalogArchived == showArchived && anchor?.threadCursor?.isNotBlank() == true) item {
-                    TextButton(onClick = { query("threads", cursor = anchor!!.threadCursor) }, enabled = !syncing && !creating,
-                        modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.conversation_load_more)) }
-                }
-                if (!syncing && anchor?.threadCursor.isNullOrBlank() && rows.isNotEmpty()) item {
-                    Text(stringResource(R.string.conversation_no_more), Modifier.fillMaxWidth().padding(vertical = 20.dp), fontSize = 16.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
             } else Spacer(Modifier.weight(1f))
             if (!showArchived) key(selectedComputerId) { ConversationStartComposer(selectedAnchor, records.orEmpty(), remoteEnabled && selectedAnchor != null, selectedProject,
-                { selectedProject = it }, ::loadModels, { leaveComposer(); onOpen(it) }, environmentSelector = { idle ->
+                {}, ::loadModels, { leaveComposer(); onOpen(it) }, environmentSelector = { idle ->
                     if (composing) ConversationEnvironmentSelector(computers, selectedComputer, selectedAnchor?.modelCatalog?.host_name.orEmpty(),
-                        projects, selectedProject, idle, now,
+                        emptyList(), selectedProject, idle, now,
                         onComputer = { computer ->
-                            if (computer.id != selectedComputerId) { selectedComputerId = computer.id; selectedProject = ConversationEnvironmentRules.NO_PROJECT; projectFilter = "" }
+                            if (computer.id != selectedComputerId) selectedComputerId = computer.id
                             scope.launch { ComputerConnectionClient(context).probe(computer) }
-                        }, onProject = { selectedProject = it }, onCloud = { leaveComposer(); cloudNew = true; cloudSelected = true })
+                        }, onProject = {}, onCloud = { leaveComposer(); cloudNew = true; cloudSelected = true })
                 }, onInputFocus = { focused -> inputFocused = focused; if (focused && !newConversation) startConversation() }) }
         }
     }
+    renameRow?.let { target -> ConversationRenameDialog((target.record?.snapshot?.title ?: target.thread?.title).orEmpty(),
+        onRename = { name -> renameRow = null; rowAction(target.record?.id ?: target.thread?.thread_id.orEmpty(), target, "rename", name) },
+        onDismiss = { renameRow = null }) }
     if (menu) ConversationMenuSheet(
         showArchived = showArchived,
-        canSync = remoteEnabled && anchor != null && !creating && !syncing,
-        canClear = !records.isNullOrEmpty(),
+        canSync = remoteEnabled && selectedComputer != null && !creating && !savingSync,
         onDismiss = { menu = false },
-        canNew = true,
-        onNew = { menu = false; startConversation() },
-        onSync = { menu = false; query("threads") },
+        onSync = { menu = false; chooseSync() },
         onArchive = { menu = false; leaveComposer(); showArchived = !showArchived; query("threads") },
-        onSettings = { menu = false; onSettings() },
-        onInfo = { menu = false; info = true },
-        onClear = { menu = false; clearDialog = true }
+        onSettings = { menu = false; onSettings() }
     )
-    if (info) AlertDialog(onDismissRequest = { info = false }, title = { Text(stringResource(R.string.conversation_info)) },
-        text = { Text(stringResource(R.string.remote_computer_identity)) }, confirmButton = { TextButton(onClick = { info = false }) { Text(stringResource(R.string.action_got_it)) } })
-    if (clearDialog) AlertDialog(onDismissRequest = { clearDialog = false }, title = { Text(stringResource(R.string.task_history_clear)) },
-        text = { Text(stringResource(R.string.task_history_clear_detail)) }, confirmButton = { TextButton(onClick = { clearDialog = false; scope.launch { withContext(Dispatchers.IO) { inbox.clear() } } }) { Text(stringResource(R.string.task_history_clear)) } },
-        dismissButton = { TextButton(onClick = { clearDialog = false }) { Text(stringResource(R.string.action_cancel)) } })
+
 }
 
 @Composable
@@ -425,6 +451,22 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
         pairingResolved = record != null
     }
     val activeId = record?.id ?: id
+    val syncRevision by ConversationSyncSelectionStore.changes.collectAsStateWithLifecycle()
+    LaunchedEffect(activeId, pairedComputer?.id, syncRevision, record?.hasFullSnapshot,
+        record?.snapshot?.thread_ref?.baseline_turn, record?.snapshot?.remote_ref?.baseline_turn, lifecycleOwner) {
+        val computer = pairedComputer ?: return@LaunchedEffect
+        val opened = record?.takeIf { it.hasFullSnapshot && it.snapshot.messages.isNotEmpty() } ?: return@LaunchedEffect
+        val ref = opened.snapshot.thread_ref ?: opened.snapshot.remote_ref ?: return@LaunchedEffect
+        val thread = ref.thread_id
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            withContext(Dispatchers.IO) {
+                val selectionStore = ConversationSyncSelectionStore(context)
+                val entry = selectionStore.read(computer).conversations.firstOrNull { it.thread.thread_id == thread }
+                if (entry?.completedTurn == ref.baseline_turn) selectionStore.markSeen(computer, thread)
+            }
+            kotlinx.coroutines.awaitCancellation()
+        }
+    }
     val canConnect = settings.enabled && settings.contentEnabled && settings.remoteEnabled && pairedComputer != null &&
         (record?.snapshot?.thread_ref != null || record?.snapshot?.remote_ref != null || record?.remoteState?.command?.action == "create")
     val remoteAvailable = canConnect && record?.archived != true
@@ -463,8 +505,12 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
         operationError = false
         scope.launch {
             try {
-                val requestId = client.library(activeId, action, readThread = thread, text = text, cursor = cursor, archived = record?.archived == true)
-                if (action == "fork") requestedForkId = requestId
+                if (action in setOf("rename", "archive", "unarchive")) {
+                    client.manageThread(activeId, action, thread, text, record?.archived == true)
+                } else {
+                    val requestId = client.library(activeId, action, readThread = thread, text = text, cursor = cursor, archived = record?.archived == true)
+                    if (action == "fork") requestedForkId = requestId
+                }
             }
             catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
             catch (_: Exception) { operationError = true }
@@ -518,7 +564,7 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
     val itemCount = timelineGroups.size + listOf(loadEarlier, limitedHistory, previewOnly,
         taskStatus, desktopRunning, emptyTimeline).count { it }
     val expectedItemCount by rememberUpdatedState(itemCount)
-    val listState = rememberLazyListState()
+    val listState = key(id) { rememberLazyListState() }
     var positioned by remember(id) { mutableStateOf(false) }
     var followLatest by remember(id) { mutableStateOf(true) }
     var userDragging by remember(id) { mutableStateOf(false) }
@@ -590,10 +636,20 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
         }
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
+            // Dialog ownership is outside lazy history: reading an older message must
+            // not prevent a live question from appearing or recreate it on scroll.
+            val ownInput = state?.event?.takeIf { it.status == "input_required" && !it.attachment_pending }?.user_input
+            val watchedInput = result?.takeIf { request?.action == "read" && it.status == "input_required" && !it.attachment_pending }?.user_input
+            if (canConnect) (ownInput ?: watchedInput)?.takeIf(RemoteInputRules::valid)?.let { input ->
+                RemoteInputPrompt(input) { answers -> client.answerInput(activeId, input.id, answers, library = ownInput == null) }
+            }
             if (current == null && loaded) Text(stringResource(R.string.task_history_missing), Modifier.padding(24.dp))
             if (operationError || result?.error?.isNotBlank() == true) Text(stringResource(R.string.conversation_sync_failed), Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             Box(Modifier.weight(1f)) {
-                if (contentReady) LazyColumn(state = listState, modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (positioned) 1f else 0f }, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (loaded && current != null && !contentReady && clock - openedAt >= 500) {
+                    ConversationLoadingPlaceholder(Modifier.fillMaxSize())
+                }
+                if (contentReady) LazyColumn(state = listState, modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (positioned) 1f else 0f }, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
                     if (loadEarlier) item("older") {
                         TextButton(onClick = { query("history", cursor = current.historyCursor.orEmpty()) }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.conversation_load_earlier)) }
                     }
@@ -608,11 +664,12 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
                         val activeTurn = if (showLive) continuityTurn else (current?.snapshot?.thread_ref ?: current?.snapshot?.remote_ref)?.baseline_turn.orEmpty()
                         ConversationTurnBlock(entries,
                             completed = turn != activeTurn || current?.snapshot?.running != true && !showLive,
-                            durationMs = current?.snapshot?.turn_durations?.get(turn),recordId = current?.id,onBrowseProcess = { followLatest = false })
+                            durationMs = current?.snapshot?.turn_durations?.get(turn),recordId = current?.id,onBrowseProcess = { followLatest = false },
+                            startedAt = current?.snapshot?.turn_started_at?.get(turn))
                     }
                     if (taskStatus && state != null)
                         item("task-state") { RemoteStatusPanel(activeId, state, canConnect) }
-                    if (desktopRunning) item("desktop-running") { Text(stringResource(R.string.remote_busy), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+
                     if (emptyTimeline) item("empty") { Text(stringResource(R.string.task_history_no_messages), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 if (positioned && !followLatest) SmallFloatingActionButton(onClick = { followLatest = true; scope.launch { if (listState.layoutInfo.totalItemsCount > 0) listState.animateScrollToItem(listState.layoutInfo.totalItemsCount - 1) } },

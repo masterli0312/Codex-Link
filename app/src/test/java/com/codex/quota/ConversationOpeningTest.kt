@@ -6,6 +6,14 @@ import org.junit.Test
 import java.time.Instant
 
 class ConversationOpeningTest {
+    @Test fun oldTaskTimeCannotReplayAnEntireDayBeforeTheCurrentWatch() {
+        val now = 200_000_000L
+        assertEquals(now / 1000 - 2, ConversationOpeningRules.replaySince(now - 86_400_000, now))
+        assertEquals(now / 1000 - 1, ConversationOpeningRules.replaySince(now, now))
+        assertTrue(ConversationOpeningRules.replaySince(now + 60_000, now) <= now / 1000)
+        assertEquals(0L, ConversationOpeningRules.replaySince(null, 500))
+    }
+
     private val host = "11111111-2222-3333-4444-555555555555"
     private val thread = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     private val computer = ComputerConnection("pair", host, "Desktop", "https://example.test/pair", "key", 0)
@@ -56,7 +64,8 @@ class ConversationOpeningTest {
         val cached = record("cached", 8000)
         assertFalse(ConversationOpeningRules.contentReady(cached, 100_000, true))
         assertTrue(ConversationOpeningRules.contentReady(cached, 100_000, false))
-        assertTrue(ConversationOpeningRules.contentReady(cached.copy(contentValidatedAt = 99_000), 100_000, true))
+        assertFalse(ConversationOpeningRules.contentReady(cached.copy(contentValidatedAt = 99_000), 100_000, true))
+        assertTrue(ConversationOpeningRules.contentReady(cached.copy(contentValidatedAt = 100_000), 100_000, true))
         assertFalse(ConversationOpeningRules.contentReady(null, 100_000, false))
         assertTrue(ConversationOpeningRules.contentReady(pending("create", 99_000), 100_000, true))
     }

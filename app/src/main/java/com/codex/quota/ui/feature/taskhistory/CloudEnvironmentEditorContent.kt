@@ -21,17 +21,20 @@ import com.codex.quota.notifications.task.ConversationTimelineEntry
 import com.codex.quota.data.cloud.DurableCloudWire
 
 /** Native configuration and preparation. Browser authorization is not presented as environment creation. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun CloudEnvironmentEditorContent(e: CloudEditorState, busy: Boolean, onName: (String)->Unit,
     onRepo: (String)->Unit, onInstall: (String)->Unit, onSkill: (String)->Unit, onNetwork: (String)->Unit,
     onCreate: ()->Unit, onPrepare: ()->Unit, onSave: ()->Unit, onPublish: ()->Unit,
     onAnswer: (String)->Unit, onSendAnswer: ()->Unit, onUse: ()->Unit,
     onModel: (String)->Unit, onEffort: (String)->Unit, onRefreshModels: ()->Unit, modifier: Modifier = Modifier,
-    queued: com.codex.quota.data.cloud.CloudPendingReply? = null,onQueuedEdit: ()->Unit = {},onQueuedSteer: ()->Unit = {},onQueuedCancel: ()->Unit = {},onStop: ()->Unit = {}) {
+    conversationLayout: Boolean = true, queued: com.codex.quota.data.cloud.CloudPendingReply? = null,
+    onQueuedEdit: ()->Unit = {},onQueuedSteer: ()->Unit = {},onQueuedCancel: ()->Unit = {},onStop: ()->Unit = {}) {
     var advanced by rememberSaveable(e.config?.id,e.creating) { mutableStateOf(false) }
     var confirmPreparation by rememberSaveable(e.config?.id,e.creating) { mutableStateOf(false) }
     var modelPicker by remember { mutableStateOf(false) }
     var effortPicker by remember { mutableStateOf(false) }
+    var configurationOpen by remember(e.config?.id) { mutableStateOf(false) }
     val conversationScroll = rememberCloudConversationScroll(e.session?.threadId.orEmpty(),e.details != null,e.details?.messages?.lastOrNull { it.role == "user" }?.id.orEmpty())
     val selectedModel = e.models.firstOrNull { it.model == e.choice.model }
     val ready = DurableCloudWire.validChoice(e.choice,e.models)
@@ -55,6 +58,39 @@ internal fun CloudEnvironmentEditorContent(e: CloudEditorState, busy: Boolean, o
         loading = busy,failed = e.models.isEmpty(),onRefresh = onRefreshModels,onSelect = { onModel(it); modelPicker = false },onDismiss = { modelPicker = false })
     if(effortPicker) RemoteEffortPicker(selectedModel?.efforts.orEmpty(),e.choice.effort,
         onSelect = { onEffort(it); effortPicker = false },onDismiss = { effortPicker = false })
+    if (conversationLayout && !e.creating && e.config != null && !e.session?.threadId.isNullOrBlank()) {
+        Column(modifier.fillMaxWidth().imePadding()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { configurationOpen = true }) {
+                    Icon(Icons.Outlined.Tune, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.cloud_native_configuration))
+                }
+                Spacer(Modifier.weight(1f))
+                if (e.config.published && e.session?.stage == "published")
+                    TextButton(onClick = onUse, enabled = !busy) { Text(stringResource(R.string.cloud_native_use)) }
+                else if (e.details?.task?.status != "running") TextButton(onClick = onPublish,
+                    enabled = !busy && !e.dirty && (e.config.draft != null || !e.session?.operationId.isNullOrBlank())) {
+                    Text(stringResource(if (!e.session?.operationId.isNullOrBlank()) R.string.cloud_native_resume_publish else R.string.cloud_native_publish))
+                }
+            }
+            key(e.session?.threadId) {
+                CloudConversationMessages(e.details?.copy(messages = e.details.messages.filterNot {
+                    it.role == "user" && it.text.contains("cloud-environment-onboarding:")
+                }), busy, Modifier.weight(1f))
+            }
+            CloudMessageComposer(e.answer,onAnswer,onSendAnswer,e.models,e.choice,busy,
+                queued == null && ready && e.details != null && (e.details.task.status != "running" || e.details.activeTurnId.isNotBlank()),
+                onModel,onEffort,onRefreshModels,running = e.details?.task?.status == "running",
+                modifier = Modifier.padding(horizontal = 16.dp,vertical = 12.dp),onOptions = { configurationOpen = true },onStop = onStop)
+        }
+        if (configurationOpen) ModalBottomSheet(onDismissRequest = { configurationOpen = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = MaterialTheme.colorScheme.surface) {
+            CloudEnvironmentEditorContent(e,busy,onName,onRepo,onInstall,onSkill,onNetwork,onCreate,onPrepare,onSave,onPublish,
+                onAnswer,onSendAnswer,{ configurationOpen = false; onUse() },onModel,onEffort,onRefreshModels,
+                Modifier.fillMaxWidth().fillMaxHeight(0.9f),conversationLayout = false)
+        }
+        return
+    }
     Column(modifier.fillMaxWidth().imePadding()) {
     LazyColumn(Modifier.weight(1f), state = conversationScroll.state, contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
@@ -127,7 +163,7 @@ internal fun CloudEnvironmentEditorContent(e: CloudEditorState, busy: Boolean, o
                     FilledTonalButton(onClick = onSave,enabled = !busy && e.dirty,modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.cloud_native_save)) }
                 }
             }
-            e.details?.messages?.filterNot { it.role == "user" && it.text.contains("cloud-environment-onboarding:") }?.let { messages ->
+            if (conversationLayout) e.details?.messages?.filterNot { it.role == "user" && it.text.contains("cloud-environment-onboarding:") }?.let { messages ->
                 item { Text(stringResource(R.string.cloud_native_setup_conversation),style = MaterialTheme.typography.titleSmall) }
                 items(com.codex.quota.notifications.task.ConversationTimeline.turnGroups(cloudTranscript(e.details.copy(messages = messages))),
                     key = { "setup-turn:" + com.codex.quota.notifications.task.ConversationTimeline.turn(it.first()) }) { entries ->
@@ -135,16 +171,14 @@ internal fun CloudEnvironmentEditorContent(e: CloudEditorState, busy: Boolean, o
                     val info = e.details.turns.firstOrNull { it.id == turn }
                     ConversationTurnBlock(entries,
                         completed = info?.status?.let { it != "inProgress" } ?: (turn != e.details.latestTurnId || e.details.task.status != "running"),
-                        durationMs = info?.durationMs,onBrowseProcess = conversationScroll.browse)
+                        durationMs = info?.durationMs,onBrowseProcess = conversationScroll.browse, startedAt = info?.startedAt)
                 }
             }
         }
     }
-    if(e.session?.threadId?.isNotBlank() == true && !e.creating) Column(Modifier.padding(horizontal = 20.dp,vertical = 12.dp)) {
-        queued?.let { QueuedMessageChip(it.text,!busy,e.details?.task?.status == "running",onQueuedEdit,onQueuedSteer,onQueuedCancel); Spacer(Modifier.height(10.dp)) }
-        CloudMessageComposer(e.answer,onAnswer,onSendAnswer,
-            e.models,e.choice,busy,queued == null && ready && e.details != null && (e.details.task.status != "running" || e.details.activeTurnId.isNotBlank()),
-            onModel,onEffort,onRefreshModels,running = e.details?.task?.status == "running",onStop = onStop)
-    }
+    if(conversationLayout && e.session?.threadId?.isNotBlank() == true && !e.creating) CloudMessageComposer(e.answer,onAnswer,onSendAnswer,
+        e.models,e.choice,busy,ready && e.details != null && (e.details.task.status != "running" || e.details.activeTurnId.isNotBlank()),
+        onModel,onEffort,onRefreshModels,running = e.details?.task?.status == "running",
+        modifier = Modifier.padding(horizontal = 20.dp,vertical = 12.dp),onStop = onStop)
     }
 }

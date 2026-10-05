@@ -16,7 +16,8 @@ data class CloudPendingReply(val threadId: String, val text: String, val key: St
 data class CloudCache(val identity: CloudIdentity, val environments: List<CloudEnvironment> = emptyList(),
     val page: CloudPage = CloudPage(emptyList()), val details: List<CloudDetails> = emptyList(),
     val fetchedAt: Long = 0, val selectedEnvironment: String = "", val branch: String = "main", val draft: String = "",
-    val pendingReplies: List<CloudPendingReply> = emptyList())
+    val pendingReplies: List<CloudPendingReply> = emptyList(),
+    val pinnedThreads: Set<String> = emptySet(), val archivedPage: CloudPage = CloudPage(emptyList()))
 
 /** Private encrypted files, excluded from backup. Scope includes local credential identity AND workspace. */
 class CloudStateStore(context: Context) {

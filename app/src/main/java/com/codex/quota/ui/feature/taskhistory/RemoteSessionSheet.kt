@@ -102,8 +102,9 @@ internal fun RemotePermissionSheet(selected: String, enabled: Boolean, onSelect:
             Text(stringResource(R.string.remote_permission_title), Modifier.padding(horizontal = 12.dp, vertical = 8.dp), style = MaterialTheme.typography.titleLarge)
             RemoteSessionRules.permissions.forEach { permission ->
                 ListItem(headlineContent = { Text(stringResource(permissionTitle(permission))) }, supportingContent = { Text(stringResource(permissionDescription(permission))) },
-                    leadingContent = { Icon(permissionIcon(permission), null, tint = if (permission == "full") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) },
-                    trailingContent = { RadioButton(selected == permission, onClick = { if (permission == "full") fullConfirm = true else onSelect(permission) }, enabled = enabled) },
+                    leadingContent = { Icon(permissionIcon(permission), null, Modifier.size(22.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                    trailingContent = { if (selected == permission) Icon(Icons.Outlined.Check, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onSurface) },
                     modifier = Modifier.fillMaxWidth().then(if (enabled) Modifier.clickable { if (permission == "full") fullConfirm = true else onSelect(permission) } else Modifier),
                     colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent))
             }
@@ -128,8 +129,8 @@ private fun permissionDescription(permission: String): Int = when (permission) {
     else -> R.string.remote_permission_default_desc
 }
 internal fun permissionIcon(permission: String) = when (permission) {
-    "review" -> Icons.Outlined.VerifiedUser
-    "readonly" -> Icons.Outlined.Lock
-    "full" -> Icons.Outlined.WarningAmber
-    else -> Icons.Outlined.PanTool
+    "review" -> ComposerIcons.Review
+    "readonly" -> ComposerIcons.Lock
+    "full" -> ComposerIcons.Key
+    else -> ComposerIcons.Sliders
 }

@@ -43,7 +43,7 @@ async function catalog(client,c){
  const thread=(await client.read(c.thread_id)).thread;
  if(thread?.id!==c.thread_id||!thread.cwd)throw Error('INVALID_THREAD');
  const skills=await availableSkills(client,thread.cwd);
- return {skills:skills.map(s=>({id:skillId(s),name:s.name,description:String(s.interface?.shortDescription||s.shortDescription||s.description||'').slice(0,400),plugin:!!s.pluginId}))};
+ return {skills:skills.map(s=>({id:skillId(s),name:s.name,display_name:typeof s.interface?.displayName==='string'?require('./remote-activity.cjs').limit(s.interface.displayName,160):'',description:String(s.interface?.shortDescription||s.shortDescription||s.description||'').slice(0,400),plugin:!!s.pluginId}))};
 }
 async function selectedSkills(client,c,local){
  if(!c.skill_ids?.length)return [];

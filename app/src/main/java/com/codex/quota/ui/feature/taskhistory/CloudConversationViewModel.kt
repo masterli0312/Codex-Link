@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.codex.quota.CodexQuotaApplication
 import com.codex.quota.data.cloud.*
 import com.codex.quota.domain.model.CodexAccount
+import com.codex.quota.domain.model.CodexUsage
 import com.codex.quota.domain.model.isApiKeyPlan
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -25,7 +26,9 @@ data class CloudUiState(val accounts: List<CodexAccount> = emptyList(), val acco
     val newTask: Boolean = false, val loading: Boolean = false, val sending: Boolean = false,
     val error: CloudErrorKind? = null, val managingEnvironments: Boolean = false, val editor: CloudEditorState? = null,
     val models: List<CloudPreparationModel> = emptyList(), val choice: CloudPreparationChoice = CloudPreparationChoice(),
-    val reply: String = "", val replyKey: String = "", val awaitingTurnId: String = "", val submittedPrompt: String = "")
+    val reply: String = "", val replyKey: String = "", val awaitingTurnId: String = "", val submittedPrompt: String = "",
+    val usage: CodexUsage? = null, val showArchived: Boolean = false, val historyLoading: Boolean = false,
+    val openingTask: Boolean = false)
 
 class CloudConversationViewModel(private val app: CodexQuotaApplication,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO) : ViewModel() {
@@ -39,11 +42,13 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
     private var streamOwner: Pair<CloudIdentity, String>? = null
     private var readsEnabled = false
     private var setupPending = false
+    private var accountUsage: Map<String, CodexUsage?> = emptyMap()
     init {
         viewModelScope.launch {
             app.repository.observeAccounts().collect { rows ->
                 val accounts = rows.map { it.account }.filter { !it.isDemoAccount && !it.planType.isApiKeyPlan }
-                _state.update { it.copy(accounts = accounts) }
+                accountUsage = rows.associate { it.account.id to it.usage }
+                _state.update { it.copy(accounts = accounts, usage = accountUsage[it.accountId]) }
                 if (accounts.none { it.id == _state.value.accountId }) selectAccount(accounts.firstOrNull()?.id.orEmpty())
             }
         }
@@ -51,11 +56,11 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
     fun selectAccount(id: String) {
         if (_state.value.sending) return
         _state.value.cache?.let { prior -> viewModelScope.launch(ioDispatcher) { store.save(prior) } }
-        selectionJob?.cancel(); refreshJob?.cancel(); saveJob?.cancel()
+        selectionJob?.cancel(); refreshJob?.cancel(); saveJob?.cancel(); historyJob?.cancel()
         streamJob?.cancel(); streamOwner = null
         setupPending = false
         _state.update { CloudUiState(accounts = it.accounts, accountId = id, loading = id.isNotBlank(),
-            newTask = it.newTask, managingEnvironments = it.managingEnvironments) }
+            newTask = it.newTask, managingEnvironments = it.managingEnvironments, usage = accountUsage[id]) }
         if (id.isBlank()) return
         selectionJob = viewModelScope.launch {
             try {
@@ -345,9 +350,70 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
         _state.update { it.copy(loading = false) }
     }
     fun setupUnavailable() { setupPending = false }
-    fun newTask() { refreshJob?.cancel(); _state.update { it.copy(newTask = true, selectedTask = "", loading = false, error = null) }; syncStream() }
-    fun backToList() { refreshJob?.cancel(); refreshJob = null; _state.update { it.copy(newTask = false, selectedTask = "", error = null) }; refresh() }
-    fun open(id: String) { if (!CloudWire.validId(id)) return; refreshJob?.cancel(); refreshJob = null; _state.update { it.copy(selectedTask = id, newTask = false, error = null,reply = "",replyKey = "",awaitingTurnId = "",submittedPrompt = "") }; refresh() }
+    fun newTask() { refreshJob?.cancel(); historyJob?.cancel(); _state.update { it.copy(newTask = true, selectedTask = "", showArchived = false, historyLoading = false, openingTask = false, loading = false, error = null) }; syncStream() }
+    fun backToList() { refreshJob?.cancel(); historyJob?.cancel(); refreshJob = null; _state.update { it.copy(newTask = false, selectedTask = "", historyLoading = false, openingTask = false, error = null) }; refresh() }
+    fun open(id: String) { if (!CloudWire.validId(id)) return; refreshJob?.cancel(); historyJob?.cancel(); refreshJob = null; _state.update { it.copy(selectedTask = id, newTask = false, historyLoading = false, openingTask = true, error = null,reply = "",replyKey = "",awaitingTurnId = "",submittedPrompt = "") }; refresh() }
+    fun pinThread() = pinThread(_state.value.selectedTask)
+    fun pinThread(threadId: String) {
+        if (!DurableCloudWire.validId(threadId)) return
+        changeCache { it.copy(pinnedThreads = if (threadId in it.pinnedThreads)
+            it.pinnedThreads - threadId else it.pinnedThreads + threadId) }
+    }
+    fun renameThread(threadId: String, name: String) = manageThread("rename", name, threadId)
+    fun archiveThread(threadId: String) = manageThread("archive", threadId = threadId)
+    fun restoreThread(threadId: String) = manageThread("unarchive", threadId = threadId)
+    fun renameThread(name: String) = manageThread("rename", name)
+    fun archiveThread() = manageThread("archive")
+    fun restoreThread() = manageThread("unarchive")
+    fun showArchived(archived: Boolean) {
+        if (_state.value.sending) return
+        refreshJob?.cancel(); refreshJob = null
+        _state.update { it.copy(showArchived = archived, selectedTask = "", newTask = false, loading = false, error = null) }
+        refresh()
+    }
+    private var historyJob: Job? = null
+    fun loadHistory() {
+        val s = _state.value; val identity = s.identity ?: return
+        val details = s.cache?.details?.firstOrNull { it.task.id == s.selectedTask } ?: return
+        val cursor = CloudHistory.cursor(details)
+        if (cursor.isBlank() || s.sending || historyJob?.isActive == true) return
+        refreshJob?.cancel(); refreshJob = null
+        _state.update { it.copy(historyLoading = true, loading = false) }
+        historyJob = viewModelScope.launch {
+            try {
+                val older = repository.history(identity, s.selectedTask, cursor)
+                if (_state.value.identity == identity && _state.value.selectedTask == s.selectedTask) {
+                    _state.update { it.copy(cache = it.cache?.let { cache -> cache.copy(details = cache.details.map { current ->
+                        if (current.task.id == s.selectedTask) CloudHistory.prepend(current, older, cursor) else current }) }, error = null) }
+                    _state.value.cache?.let { withContext(ioDispatcher) { store.save(it) } }
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { if (_state.value.identity == identity && _state.value.selectedTask == s.selectedTask)
+                _state.update { it.copy(error = kind(e)) } }
+            finally { if (_state.value.identity == identity && _state.value.selectedTask == s.selectedTask)
+                _state.update { it.copy(historyLoading = false) } }
+        }
+    }
+    private fun manageThread(action: String, name: String = "", threadId: String = _state.value.selectedTask) {
+        val s = _state.value; val identity = s.identity ?: return
+        if (s.sending || threadId.isBlank() || s.editor != null) return
+        if (runCatching { CloudThreadManagement.request(action, threadId, name) }.isFailure) return
+        refreshJob?.cancel(); saveJob?.cancel()
+        _state.update { it.copy(sending = true, error = null, loading = false) }
+        viewModelScope.launch {
+            try {
+                repository.manageThread(identity, action, threadId, name)
+                if (_state.value.identity == identity) {
+                    _state.update { it.copy(cache = it.cache?.let { cache ->
+                        CloudThreadManagement.apply(cache, action, threadId, name) },
+                        selectedTask = if (action != "rename" && it.selectedTask == threadId) "" else it.selectedTask) }
+                    _state.value.cache?.let { withContext(ioDispatcher) { store.save(it) } }
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { if (_state.value.identity == identity) _state.update { it.copy(error = kind(e)) } }
+            finally { if (_state.value.identity == identity) _state.update { it.copy(sending = false) } }
+        }
+    }
     fun replyDraft(value: String) {
         if(value.toByteArray().size <= 16384) _state.update { it.copy(reply = value,replyKey = it.replyKey.ifBlank { UUID.randomUUID().toString() }) }
     }
@@ -395,7 +461,7 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
             if (selectionJob?.isActive != true && current.accountId.isNotBlank()) selectAccount(current.accountId)
             return
         }
-        if (refreshJob?.isActive == true || current.sending) return
+        if (refreshJob?.isActive == true || current.sending || current.historyLoading) return
         refreshJob = viewModelScope.launch {
             if(showProgress) _state.update { it.copy(loading = true) }
             try {
@@ -427,19 +493,25 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
                 } else if (current.selectedTask.isNotBlank()) {
                     val rawDetails = repository.details(identity, current.selectedTask)
                     val prior = _state.value.cache?.details?.firstOrNull { it.task.id == current.selectedTask }
-                    val details = DurableCloudWire.reconcileReply(CloudConversationStream.merge(prior,rawDetails),current.awaitingTurnId,current.submittedPrompt)
+                    val native = CloudConversationStream.merge(prior,rawDetails)
+                    val rejected = native === prior && rawDetails.latestTurnId != prior?.latestTurnId
+                    val details = CloudHistory.refreshed(prior, DurableCloudWire.reconcileReply(native,current.awaitingTurnId,current.submittedPrompt))
                     if (_state.value.identity == identity && _state.value.selectedTask == current.selectedTask)
                         _state.update { s -> s.copy(cache = s.cache?.let { it.copy(
                             details = (it.details.filterNot { d -> d.task.id == details.task.id } + details).takeLast(5),
-                            page = it.page.copy(items = (it.page.items.filterNot { t -> t.id == details.task.id } + details.task)
-                                .sortedByDescending { t -> t.updatedAt }), fetchedAt = System.currentTimeMillis()) }, error = null,
+                            page = if (current.showArchived) it.page else it.page.copy(items = (it.page.items.filterNot { t -> t.id == details.task.id } + details.task)
+                                .sortedByDescending { t -> t.updatedAt }),
+                            archivedPage = if (!current.showArchived) it.archivedPage else it.archivedPage.copy(items =
+                                (it.archivedPage.items.filterNot { t -> t.id == details.task.id } + details.task).sortedByDescending { t -> t.updatedAt }),
+                            fetchedAt = System.currentTimeMillis()) }, error = null, openingTask = s.openingTask && rejected,
                             awaitingTurnId = if(rawDetails.latestTurnId == current.awaitingTurnId) "" else s.awaitingTurnId,
                             submittedPrompt = if(rawDetails.latestTurnId == current.awaitingTurnId) "" else s.submittedPrompt) }
                 } else {
                     val environments = repository.environments(identity)
-                    val page = repository.tasks(identity)
+                    val page = if (current.showArchived) repository.archivedTasks(identity) else repository.tasks(identity)
                     if (_state.value.identity == identity) _state.update { s -> s.copy(cache = s.cache?.let {
-                        CloudEnvironmentSetup.reconcile(it, identity, environments).copy(page = page,
+                        CloudEnvironmentSetup.reconcile(it, identity, environments).copy(page = if (current.showArchived) it.page else page,
+                            archivedPage = if (current.showArchived) page else it.archivedPage,
                             fetchedAt = System.currentTimeMillis()) }, error = null) }
                 }
                 _state.value.cache?.takeIf { it.identity == identity }?.let { cache -> withContext(ioDispatcher) { store.save(cache) } }
@@ -451,14 +523,15 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
     fun more() {
         val current = _state.value
         val identity = current.identity ?: return
-        val cursor = current.cache?.page?.cursor.orEmpty()
+        val cursor = (if (current.showArchived) current.cache?.archivedPage else current.cache?.page)?.cursor.orEmpty()
         if (cursor.isBlank() || refreshJob?.isActive == true) return
         refreshJob = viewModelScope.launch {
             _state.update { it.copy(loading = true) }
             try {
-                val page = repository.tasks(identity, cursor)
+                val page = if (current.showArchived) repository.archivedTasks(identity, cursor) else repository.tasks(identity, cursor)
                 if (_state.value.identity == identity) _state.update { s -> s.copy(cache = s.cache?.let {
-                    it.copy(page = page.copy(items = (it.page.items + page.items).distinctBy { t -> t.id })) }, error = null) }
+                    if (current.showArchived) it.copy(archivedPage = page.copy(items = (it.archivedPage.items + page.items).distinctBy { t -> t.id }))
+                    else it.copy(page = page.copy(items = (it.page.items + page.items).distinctBy { t -> t.id })) }, error = null) }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { if (_state.value.identity == identity) _state.update { it.copy(error = kind(e)) } }
             finally { if (_state.value.identity == identity) _state.update { it.copy(loading = false) } }
@@ -616,13 +689,16 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
                                 submittedPrompt = if (details.latestTurnId == e.awaitingTurnId) "" else e.submittedPrompt),error = null)
                         } else if (current.selectedTask == owner.second && !current.managingEnvironments) {
                             val prior = current.cache?.details?.firstOrNull { it.task.id == owner.second }
-                            val details = DurableCloudWire.reconcileReply(CloudConversationStream.merge(prior,incoming),current.awaitingTurnId,current.submittedPrompt)
+                            val native = CloudConversationStream.merge(prior,incoming)
+                            val rejected = native === prior && incoming.latestTurnId != prior?.latestTurnId
+                            val details = CloudHistory.refreshed(prior, DurableCloudWire.reconcileReply(native,current.awaitingTurnId,current.submittedPrompt))
                             current.copy(cache = current.cache?.let { cache -> cache.copy(
                                 details = (cache.details.filterNot { it.task.id == owner.second } + details).takeLast(5),
                                 page = cache.page.copy(items = (cache.page.items.filterNot { it.id == owner.second } + details.task).sortedByDescending { it.updatedAt }),
                                 fetchedAt = System.currentTimeMillis()) },
                                 awaitingTurnId = if (details.latestTurnId == current.awaitingTurnId) "" else current.awaitingTurnId,
-                                submittedPrompt = if (details.latestTurnId == current.awaitingTurnId) "" else current.submittedPrompt,error = null)
+                                submittedPrompt = if (details.latestTurnId == current.awaitingTurnId) "" else current.submittedPrompt,error = null,
+                                openingTask = current.openingTask && rejected)
                         } else current
                     }
                     saveJob?.cancel()

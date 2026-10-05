@@ -17,6 +17,7 @@ object ConversationSnapshotRules {
 
     fun regresses(current: TaskInboxRecord, incoming: TaskConversationSnapshot, nativeRewrite: Boolean = false): Boolean {
         if (current.snapshot.conversation_id != incoming.conversation_id) return true
+        if (incoming.thread_ref != null && incoming.remote_ref != null && incoming.thread_ref != incoming.remote_ref) return true
         val oldRef = current.snapshot.thread_ref ?: current.snapshot.remote_ref
         val newRef = incoming.thread_ref ?: incoming.remote_ref
         if (oldRef != null && newRef != null && (oldRef.host_id != newRef.host_id || oldRef.thread_id != newRef.thread_id)) return true
@@ -32,11 +33,15 @@ object ConversationSnapshotRules {
         if ((!nativeRewrite || time(incoming) <= time(current.snapshot)) && incomingTurn.isNotBlank() && incomingTurn == turn(current.snapshot) &&
             current.snapshot.reply.length > incoming.reply.length && current.snapshot.reply.startsWith(incoming.reply) &&
             (incoming.reply.isNotBlank() || native)) return true
-        if (nativeRewrite && incomingTurn == turn(current.snapshot) && time(incoming) <= time(current.snapshot)) {
+        if (nativeRewrite && incomingTurn == turn(current.snapshot) &&
+            (time(incoming) <= time(current.snapshot) || current.snapshot.running && incoming.running)) {
             val messages = incoming.messages.associateBy { it.id }
-            if (current.snapshot.messages.filter { it.id.isNotBlank() && it.id.substringBefore(':') == incomingTurn }.any { old ->
+            if (current.snapshot.messages.filter { it.id.isNotBlank() && it.id.substringBefore(':') == incomingTurn &&
+                it.id.substringAfter(':') !in setOf("phone-input", "phone-reply") && !it.id.substringAfter(':').startsWith("steer-") }.any { old ->
                 val replacement = messages[old.id]
-                replacement == null || replacement.text.length < old.text.length && old.text.startsWith(replacement.text)
+                replacement == null && !(incoming.truncated && old.position >= 0 &&
+                    incoming.messages.filter { it.id.substringBefore(':') == incomingTurn && it.position >= 0 }.minOfOrNull { it.position }?.let { old.position < it } == true) ||
+                    replacement != null && old.role == "assistant" && replacement.text.length < old.text.length && old.text.startsWith(replacement.text)
             }) return true
         }
         return false

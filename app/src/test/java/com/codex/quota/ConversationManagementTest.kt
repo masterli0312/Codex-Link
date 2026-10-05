@@ -11,7 +11,8 @@ class ConversationManagementTest {
     private val event = RemoteEvent("event", "request", "host", "anchor", "anchor-chat", "managed", 1, 2000,
         managed_thread_id = thread, managed_action = "rename", managed_name = "New name")
     private val record = TaskInboxRecord("id", 500, "identity", "pairing", TaskConversationSnapshot(
-        conversation_id = TaskInbox.hash(thread), title = "Old name", reply = "Keep reply", completed_at = "1970-01-01T00:00:01Z"),
+        conversation_id = TaskInbox.hash(thread), title = "Old name", reply = "Keep reply", completed_at = "1970-01-01T00:00:01Z",
+        thread_ref = RemoteThreadRef("host", thread, "turn")),
         selectedModel = "model", selectedEffort = "high", historyMessages = listOf(TaskConversationMessage("user", "Keep history")))
 
     @Test fun renameDoesNotChangeTimeChoicesOrHistory() {
@@ -39,5 +40,32 @@ class ConversationManagementTest {
         val restored = ConversationIndex.applyManagement(archived, "pairing", query.copy(action = "unarchive"), event.copy(managed_action = "unarchive"))
         assertFalse(restored.archived)
         assertEquals(record.historyMessages, restored.historyMessages)
+    }
+
+    @Test fun staleCatalogCannotResurfaceAnArchivedConversation() {
+        val archived = ConversationIndex.applyManagement(record, "pairing", query.copy(action = "archive"),
+            event.copy(managed_action = "archive"))
+        val computer = ComputerConnection("computer", "host", "Computer", "https://example.test/topic", "key", 0)
+        val local = archived.copy(endpointHash = TaskInbox.hash(computer.endpoint))
+        val stale = listOf(RemoteThreadSummary(thread, "Old name"))
+        assertFalse(ConversationListPresentation.build(listOf(local), stale, local.endpointHash, "", false, computer, false, "").hasResults)
+        val other = local.copy(snapshot = local.snapshot.copy(thread_ref = RemoteThreadRef("another-host", thread, "turn")))
+        assertEquals(other, ConversationIndex.applyManagement(other, local.endpointHash, query.copy(action = "archive"), event.copy(managed_action = "archive")))
+    }
+
+    @Test fun onlyANewerScopedCatalogCanConfirmExternalRestoration() {
+        val archived = ConversationIndex.applyManagement(record, "pairing", query.copy(action = "archive"),
+            event.copy(managed_action = "archive"), appliedAt = 3000)
+        val catalog = query.copy(action = "threads", issued_at = 2500)
+        val result = event.copy(status = "threads", threads = listOf(RemoteThreadSummary(thread)))
+        assertEquals(archived, ConversationIndex.applyCatalogArchive(archived, "pairing", catalog, result))
+        val fresh = catalog.copy(issued_at = 3500)
+        val restored = ConversationIndex.applyCatalogArchive(archived, "pairing", fresh, result)
+        assertFalse(restored.archived)
+        assertEquals(record.historyMessages, restored.historyMessages)
+        assertEquals(archived, ConversationIndex.applyCatalogArchive(archived, "pairing", fresh, result.copy(threads = emptyList())))
+        assertEquals(archived, ConversationIndex.applyCatalogArchive(archived, "pairing", fresh, result.copy(host_id = "other")))
+        val staleDuplicate = record.copy(id = "older", receivedAt = 9000)
+        assertTrue(ConversationIndex.latestForDisplay(listOf(archived, staleDuplicate)).single().archived)
     }
 }

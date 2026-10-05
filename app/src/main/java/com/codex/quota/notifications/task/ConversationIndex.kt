@@ -35,8 +35,9 @@ object ConversationIndex {
         .filter { !it.archived && it.endpointHash == pairing && matchesSearch(it, query) }
         .map { it.snapshot.conversation_id }.toSet()
 
-    fun applyManagement(record: TaskInboxRecord, pairing: String, query: RemoteCommand, event: RemoteEvent): TaskInboxRecord {
-        if (record.endpointHash != pairing || event.status != "managed" || event.partial || event.error.isNotBlank() ||
+    fun applyManagement(record: TaskInboxRecord, pairing: String, query: RemoteCommand, event: RemoteEvent,
+        appliedAt: Long = event.at): TaskInboxRecord {
+        if (record.endpointHash != pairing || host(record) != query.host_id || event.status != "managed" || event.partial || event.error.isNotBlank() ||
             event.request_id != query.id || event.host_id != query.host_id || event.thread_id != query.thread_id ||
             event.conversation_id != query.conversation_id || event.managed_thread_id != query.read_thread_id ||
             event.managed_action != query.action || query.action !in setOf("rename", "archive", "unarchive")) return record
@@ -46,7 +47,17 @@ object ConversationIndex {
         } else record.threadCatalog.filter { it.thread_id != query.read_thread_id }
         return record.copy(threadCatalog = catalog,
             snapshot = if (target && query.action == "rename") record.snapshot.copy(title = event.managed_name) else record.snapshot,
-            archived = if (target && query.action != "rename") query.action == "archive" else record.archived)
+            archived = if (target && query.action != "rename") query.action == "archive" else record.archived,
+            archiveChangedAt = if (target && query.action != "rename") appliedAt else record.archiveChangedAt)
+    }
+    /** Only positive membership from a catalog requested after the last acknowledgement can change archive state. */
+    fun applyCatalogArchive(record: TaskInboxRecord, pairing: String, query: RemoteCommand, event: RemoteEvent): TaskInboxRecord {
+        if (record.libraryAnchor || record.endpointHash != pairing || host(record) != query.host_id ||
+            query.action != "threads" || event.status != "threads" || event.partial || event.attachment_pending || event.error.isNotBlank() ||
+            event.request_id != query.id || event.host_id != query.host_id || event.thread_id != query.thread_id ||
+            event.conversation_id != query.conversation_id || query.issued_at <= record.archiveChangedAt ||
+            event.threads.none { TaskInbox.hash(it.thread_id) == record.snapshot.conversation_id }) return record
+        return record.copy(archived = query.archived, archiveChangedAt = query.issued_at)
     }
     /** Zero means unknown; transport, receipt and phone clock times are never activity dates. */
     fun timestamp(record: TaskInboxRecord): Long = runCatching {
@@ -113,10 +124,21 @@ object ConversationIndex {
             snapshot = downloaded.snapshot, hasFullSnapshot = downloaded.hasFullSnapshot)
     }
 
-    fun mergeSynced(existing: TaskInboxRecord?, synced: TaskInboxRecord): TaskInboxRecord {
-        if (existing == null) return synced
+    /** Validation belongs to the adopted snapshot, never merely to receiving a read response. */
+    fun mergeSynced(existing: TaskInboxRecord?, synced: TaskInboxRecord, validatedAt: Long? = null): TaskInboxRecord {
+        if (existing == null) return if (validatedAt == null) synced else synced.copy(contentValidatedAt = validatedAt)
         require(sameConversation(existing, synced))
-        if (ConversationSnapshotRules.regresses(existing, synced.snapshot, nativeRewrite = true)) return existing
+        // A fresh authenticated watch may be a shorter projection of the same native turn.
+        // Keep the richer content, but acknowledge that this exact turn was just verified.
+        val oldVerifiedRef = existing.snapshot.thread_ref ?: existing.snapshot.remote_ref
+        val newVerifiedRef = synced.snapshot.thread_ref ?: synced.snapshot.remote_ref
+        val verifiedCurrent = if (validatedAt != null && existing.hasFullSnapshot &&
+            oldVerifiedRef != null && oldVerifiedRef == newVerifiedRef && oldVerifiedRef.baseline_turn.isNotBlank() &&
+            synced.snapshot.running == existing.snapshot.running &&
+            (synced.snapshot.thread_ref == null || synced.snapshot.remote_ref == null || synced.snapshot.thread_ref == synced.snapshot.remote_ref) &&
+            existing.snapshot.messages.any { it.id.isNotBlank() } && synced.snapshot.messages.any { it.id.isNotBlank() })
+            existing.copy(contentValidatedAt = maxOf(existing.contentValidatedAt, validatedAt)) else existing
+        if (ConversationSnapshotRules.regresses(existing, synced.snapshot, nativeRewrite = true)) return verifiedCurrent
         val confirmed = confirmedCompletion(existing, synced)
         val sameCompletedTurn = synced.snapshot.remote_ref?.baseline_turn?.let {
             it == existing.snapshot.remote_ref?.baseline_turn || it == existing.remoteState?.event?.turn_id
@@ -127,7 +149,19 @@ object ConversationIndex {
         val providerAdvanced = synced.snapshot.messages.any { it.id.isNotBlank() } &&
             timestamp(synced) > timestamp(existing) && existing.remoteState?.command?.issued_at?.let { timestamp(synced) > it + 1000 } == true &&
             ConversationSnapshotRules.turn(synced.snapshot) != ConversationSnapshotRules.turn(existing.snapshot)
-        if (hasPendingTurn(existing) && confirmed == null && !providerAdvanced || !sameCompletedTurn && (timestamp(existing) > timestamp(synced) || terminalWithoutTime && !knownLaterTurn)) return existing
+        // A watch of the authenticated active turn may update its content while the
+        // send is still pending. Adopting that content does not complete the request.
+        val active = existing.remoteState
+        val event = active?.event
+        val ref = synced.snapshot.thread_ref ?: synced.snapshot.remote_ref
+        val sameActiveTurn = active != null && event != null && ref != null &&
+            event.request_id == active.command.id && event.host_id == active.command.host_id &&
+            event.thread_id == active.command.thread_id && event.conversation_id == active.command.conversation_id &&
+            event.status in setOf("accepted", "running", "approval", "input_required") &&
+            event.turn_id.isNotBlank() && event.turn_id == ref.baseline_turn && ref.host_id == active.command.host_id &&
+            ref.thread_id == (existing.snapshot.thread_ref ?: existing.snapshot.remote_ref)?.thread_id &&
+            synced.snapshot.messages.any { it.id.substringBefore(':', "") == event.turn_id }
+        if (hasPendingTurn(existing) && confirmed == null && !providerAdvanced && !sameActiveTurn || !sameCompletedTurn && (timestamp(existing) > timestamp(synced) || terminalWithoutTime && !knownLaterTurn)) return verifiedCurrent
         // Preserve already read pages, but restart the cursor at the new tail: a desktop
         // session may have advanced several pages while the phone was closed.
         // Refresh known items in place: a previously regressed tail must not move an
@@ -142,7 +176,8 @@ object ConversationIndex {
         }
         return existing.copy(snapshot = synced.snapshot, hasFullSnapshot = true,
             attachmentUrl = null, attachmentExpiresAt = 0, historyMessages = history, historyCursor = null, historyLimited = limited,
-            remoteState = confirmed ?: existing.remoteState)
+            remoteState = confirmed ?: existing.remoteState,
+            contentValidatedAt = validatedAt ?: existing.contentValidatedAt)
     }
 
     /** Only an authenticated native terminal snapshot of the exact active turn can
@@ -179,7 +214,9 @@ object ConversationIndex {
             it.remoteState!!.command.issued_at >= timestamp(newest) &&
                 ConversationSnapshotRules.currentTask(newest, it.remoteState) }
             .maxByOrNull { it.remoteState!!.command.issued_at }
-        currentPending ?: newest
+        val content = currentPending ?: newest
+        val archiveState = group.maxByOrNull { it.archiveChangedAt }?.takeIf { it.archiveChangedAt > 0 }
+        if (archiveState == null) content else content.copy(archived = archiveState.archived, archiveChangedAt = archiveState.archiveChangedAt)
     }.sortedByDescending(::timestamp)
 
     fun latest(records: List<TaskInboxRecord>): List<TaskInboxRecord> = groups(records).map { group ->

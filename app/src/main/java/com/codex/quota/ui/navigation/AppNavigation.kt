@@ -14,6 +14,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Dashboard
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -84,7 +87,7 @@ fun AppNavigation(
                                 }
                             }
                         },
-                        icon = { Icon(Icons.Default.Dashboard, contentDescription = null) },
+                        icon = { Icon(if (currentRoute == Screen.Dashboard.route) Icons.Default.Dashboard else Icons.Outlined.Dashboard, contentDescription = null) },
                         label = { Text(stringResource(R.string.dashboard_title)) }
                     )
                     NavigationBarItem(
@@ -98,7 +101,7 @@ fun AppNavigation(
                                 }
                             }
                         },
-                        icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
+                        icon = { Icon(com.codex.quota.ui.components.ConversationNavIcon, contentDescription = null) },
                         label = { Text(stringResource(R.string.conversations_title)) }
                     )
                     NavigationBarItem(
@@ -112,7 +115,7 @@ fun AppNavigation(
                                 }
                             }
                         },
-                        icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                        icon = { Icon(if (currentRoute == Screen.Settings.route) Icons.Default.Settings else Icons.Outlined.Settings, contentDescription = null) },
                         label = { Text(stringResource(R.string.settings_title)) }
                     )
                 }

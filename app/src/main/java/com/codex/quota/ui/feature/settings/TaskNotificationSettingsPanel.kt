@@ -216,7 +216,7 @@ private fun exportInstaller(context: Context, settings: TaskNotificationSettings
     val dir = File(context.cacheDir, "task-notifications").apply { mkdirs() }
     val output = File(dir, "Codex-Usage-Windows-" + computer.id.take(8) + ".zip")
     ZipOutputStream(output.outputStream()).use { zip ->
-        for (name in listOf("Install.ps1", "notify.cjs", "task-content.cjs", "remote.cjs", "remote-core.cjs", "codex-client.cjs", "native-runtime.cjs", "conversation-library.cjs", "conversation-images.cjs", "live-watch.cjs", "remote-activity.cjs", "remote-goal.cjs", "remote-options.cjs", "remote-stream.cjs", "remote-attachments.cjs", "shared-server.cjs", "Enable-SharedConversations.ps1", "SettingsFile.ps1", "setup.cmd", "NotificationLauncher.cs")) {
+        for (name in listOf("Install.ps1", "notify.cjs", "task-content.cjs", "remote.cjs", "remote-core.cjs", "codex-client.cjs", "native-runtime.cjs", "conversation-library.cjs", "conversation-images.cjs", "conversation-files.cjs", "conversation-questions.cjs", "completion-watch.cjs", "live-watch.cjs", "remote-activity.cjs", "remote-goal.cjs", "remote-options.cjs", "remote-stream.cjs", "remote-attachments.cjs", "shared-server.cjs", "Enable-SharedConversations.ps1", "SettingsFile.ps1", "setup.cmd", "NotificationLauncher.cs")) {
             zip.putNextEntry(ZipEntry(name))
             context.assets.open("task-notifications/$name").use { it.copyTo(zip) }
             zip.closeEntry()

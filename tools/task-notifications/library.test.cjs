@@ -2,6 +2,19 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {snapshot,selectedProject,readSnapshot}=require('../../app/src/main/assets/task-notifications/conversation-library.cjs');
 const thread='11111111-2222-3333-4444-555555555555',host='22222222-2222-3333-4444-555555555555';
+test('current full native turn overrides an older active thread flag and retains real duration',async()=>{
+ const client={call:async m=>m==='thread/read'?{thread:{id:thread,status:{type:'active'},updatedAt:1000}}:
+  {data:[{id:'latest',status:'completed',durationMs:189000,items:[{id:'answer',type:'agentMessage',phase:'final_answer',text:'Current completed answer'}]}]}};
+ const value=await readSnapshot(client,thread,host);
+ assert.equal(value.running,false);assert.equal(value.remote_ref.baseline_turn,'latest');
+ assert.equal(value.turn_durations.latest,189000);assert.equal(value.messages[0].phase,'final_answer');
+});
+test('unloaded history cannot be presented as an empty current transcript',async()=>{
+ const client={call:async(m,p)=>m==='thread/turns/list'?{data:[{id:'unloaded',itemsView:'notLoaded'}]}:
+  {thread:{id:thread,status:{type:'idle'},updatedAt:1000}}};
+ const value=await readSnapshot(client,thread,host,()=>({conversation_id:'hash',messages:[{role:'assistant',text:'Fallback'}],reply:'Fallback'}));
+ assert.equal(value.messages[0].text,'Fallback');
+});
 test('tool history uses scoped native items, chronological order and opaque pagination',async()=>{
  const {activityPage}=require('../../app/src/main/assets/task-notifications/conversation-library.cjs');
  const client={call:async(method,params)=>{
@@ -122,4 +135,45 @@ test('management uses only official scoped operations and refuses active threads
  await assert.rejects(manageThread(client,'rename',thread,'\n'),/INVALID_NAME/);
  const busy={call:async()=>({thread:{id:thread,status:{type:'active'}}})};
  await assert.rejects(manageThread(busy,'archive',thread),/BUSY/);
+});
+
+test('native missing rollout failures are explicit and never become successful local archives',async()=>{
+ const {manageThread}=require('../../app/src/main/assets/task-notifications/conversation-library.cjs');
+ for(const [action,message,expected] of [
+  ['archive',`no rollout found for thread id ${thread}`,'NO_ARCHIVABLE_RECORD'],
+  ['unarchive',`no archived rollout found for thread id ${thread}`,'ARCHIVE_RECORD_MISSING']
+ ]){
+  let mutations=0;
+  const client={call:async(m)=>{
+   if(m==='thread/read')return {thread:{id:thread,status:{type:'notLoaded'}}};
+   if(m==='thread/list')return {data:[],nextCursor:null};
+   mutations++;throw Object.assign(Error('CODEX_RPC'),{rpcCode:-32600,rpcMessage:message});
+  }};
+  await assert.rejects(manageThread(client,action,thread),new RegExp(expected));
+  assert.equal(mutations,1);
+ }
+ const client={call:async(m)=>{
+  if(m==='thread/read')return {thread:{id:thread,status:{type:'notLoaded'}}};
+  throw Object.assign(Error('CODEX_RPC'),{rpcCode:-32603,rpcMessage:'private native details'});
+ }};
+ await assert.rejects(manageThread(client,'archive',thread),/CODEX_RPC/);
+});
+
+test('already archived or restored threads confirm exact native membership without repeating a successful mutation',async()=>{
+ const {manageThread}=require('../../app/src/main/assets/task-notifications/conversation-library.cjs');
+ for(const action of ['archive','unarchive']){
+  const calls=[];
+  const client={call:async(m,p)=>{
+   calls.push(m);
+   if(m==='thread/read')return {thread:{id:thread,name:'Scoped',cwd:'/workspace',status:{type:'notLoaded'}}};
+   if(m==='thread/list'){
+    assert.equal(p.archived,action==='archive');
+    return {data:p.cursor?[{id:thread}]:[{id:'another'}],nextCursor:p.cursor?null:'next'};
+   }
+   throw Object.assign(Error('CODEX_RPC'),{rpcCode:-32600,rpcMessage:action==='archive'?`no rollout found for thread id ${thread}`:`no archived rollout found for thread id ${thread}`});
+  }};
+  const result=await manageThread(client,action,thread);
+  assert.equal(result.managed_thread_id,thread);assert.equal(result.managed_action,action);
+  assert.equal(calls.filter(m=>m==='thread/'+action).length,1);
+ }
 });

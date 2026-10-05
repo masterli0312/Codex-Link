@@ -100,7 +100,7 @@ fun CodexQuotaTheme(
         surfaceContainer = Color(0xFF262626), surfaceContainerHigh = Color(0xFF2C2C2C),
         surfaceContainerHighest = Color(0xFF333333), surfaceVariant = Color(0xFF262626),
         onSurface = Color(0xFFF2F2F2), onBackground = Color(0xFFF2F2F2),
-        onSurfaceVariant = Color(0xFFAAAAAA), outline = Color(0xFF555555), outlineVariant = Color(0xFF363636)
+        onSurfaceVariant = Color(0xFFB4B4B4), outline = Color(0xFF777777), outlineVariant = Color(0xFF363636)
     ) else baseScheme.copy(
         background = Color(0xFFF7F7F7), surface = Color.White, surfaceTint = Color.Transparent,
         surfaceDim = Color(0xFFEEEEEE), surfaceBright = Color.White,
@@ -108,7 +108,7 @@ fun CodexQuotaTheme(
         surfaceContainer = Color(0xFFEEEEEE), surfaceContainerHigh = Color(0xFFE8E8E8),
         surfaceContainerHighest = Color(0xFFE2E2E2), surfaceVariant = Color(0xFFEEEEEE),
         onSurface = Color(0xFF171717), onBackground = Color(0xFF171717),
-        onSurfaceVariant = Color(0xFF737373), outline = Color(0xFFD4D4D4), outlineVariant = Color(0xFFE8E8E8)
+        onSurfaceVariant = Color(0xFF626262), outline = Color(0xFF858585), outlineVariant = Color(0xFFE2E2E2)
     )
 
     MaterialTheme(

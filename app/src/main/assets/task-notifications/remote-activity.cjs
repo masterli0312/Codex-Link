@@ -1,7 +1,7 @@
 'use strict';
 // Only public App Server item summaries are projected. No reasoning, arguments or local file reads.
 const limit=(value,bytes)=>typeof value==='string'?Buffer.from(value).subarray(0,bytes).toString('utf8').replace(/\uFFFD$/,''):'';
-function projectItem(turn,item,position=-1){
+function projectItem(turn,item,position=-1,thread='',cwd=''){
  if(typeof turn!=='string'||!turn||turn.length>128||typeof item?.id!=='string'||!item.id||item.id.length>128)return null;
  const a={id:turn+':'+item.id,turn_id:turn,type:item.type,status:['inProgress','completed','failed','declined'].includes(item.status)?item.status:'completed',title:'',detail:'',files:[],truncated:false};
  if(Number.isSafeInteger(position)&&position>=0)a.position=position;
@@ -28,6 +28,8 @@ function projectItem(turn,item,position=-1){
   // Arbitrary MCP arguments/results can contain secrets; expose only typed lifecycle status.
  }else if(item.type==='plan'){
   a.detail=limit(item.text,8192);a.truncated=a.detail!==item.text;
+ }else if(item.type==='imageView'){
+  a.images=thread?require('./conversation-images.cjs').projectImages(thread,item,cwd):[];
  }else if(item.type==='contextCompaction')a.type='compaction';
  else return null;
  return a;
@@ -40,12 +42,15 @@ function mergeActivities(older=[],newer=[]){
     previous.status!=='inProgress'&&previous.status!==a.status))continue;
   all.set(a.id,previous?.position>=0&&!(a.position>=0)?{...a,position:previous.position}:a);
  }
- const values=[...all.values()].slice(-40);
+ const turns=new Map();for(const item of all.values()){
+  if(!turns.has(item.turn_id))turns.set(item.turn_id,[]);turns.get(item.turn_id).push(item);
+ }
+ const values=[...turns.values()].flatMap(items=>items.sort((a,b)=>(a.position>=0?a.position:Number.MAX_SAFE_INTEGER)-(b.position>=0?b.position:Number.MAX_SAFE_INTEGER))).slice(-40);
  while(Buffer.byteLength(JSON.stringify(values))>65536)values.shift();
  return values;
 }
-function projectTurns(turns=[]){
- return mergeActivities([],turns.flatMap(t=>(t.items||[]).map((i,n)=>projectItem(t.id,i,n)).filter(Boolean)));
+function projectTurns(turns=[],thread='',cwd=''){
+ return mergeActivities([],turns.flatMap(t=>(t.items||[]).map((i,n)=>projectItem(t.id,i,n,thread,cwd)).filter(Boolean)));
 }
 function turnDuration(turn){
  if(Number.isSafeInteger(turn.durationMs)&&turn.durationMs>=0)return turn.durationMs;

@@ -10,14 +10,24 @@ import kotlinx.serialization.json.Json
 
 @Serializable
 data class TaskConversationMessage(val role: String, val text: String, val id: String = "", val position: Int = -1,
-    val images: List<ConversationImageRef> = emptyList(),val phase: String = "")
+    val images: List<ConversationImageRef> = emptyList(),val phase: String = "", val files: List<ConversationFileRef> = emptyList())
 
 @Serializable
 data class ConversationImageRef(val id: String)
 
+@Serializable
+data class ConversationFileRef(val id: String, val name: String)
+
+object ConversationFileRules {
+    const val MAX_BYTES = 256 * 1024 * 1024
+    fun valid(files: List<ConversationFileRef>) = files.size <= 10 && files.map { it.id }.distinct().size == files.size && files.all {
+        it.id.matches(Regex("[a-f0-9]{64}")) && it.name.isNotBlank() && it.name.toByteArray().size <= 240 && it.name.none { c -> c in "/\\\r\n\u0000" }
+    }
+}
+
 object ConversationImageRules {
     const val MAX_BYTES = 8 * 1024 * 1024
-    fun valid(message: TaskConversationMessage): Boolean = message.images.size <= 3 &&
+    fun valid(message: TaskConversationMessage): Boolean = ConversationFileRules.valid(message.files) && message.images.size <= SelectedAttachmentRules.MAX_FILES &&
         message.images.map { it.id }.distinct().size == message.images.size &&
         message.images.all { it.id.matches(Regex("[a-f0-9]{64}")) }
 }
@@ -33,7 +43,8 @@ data class TaskConversationSnapshot(
     val remote_ref: RemoteThreadRef? = null,
     val history_cursor: String = "",
     val activities: List<RemoteActivity> = emptyList(), val running: Boolean = false,
-    val thread_ref: RemoteThreadRef? = null, val turn_durations: Map<String,Long> = emptyMap()
+    val thread_ref: RemoteThreadRef? = null, val turn_durations: Map<String,Long> = emptyMap(),
+    val turn_started_at: Map<String, Long> = emptyMap()
 )
 
 /** Independent pairing encryption. Never uses OpenAI credentials. IV(12) + ciphertext + GCM tag(16). */

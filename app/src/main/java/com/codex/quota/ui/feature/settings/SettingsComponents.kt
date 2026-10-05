@@ -28,7 +28,7 @@ internal fun SettingsGroup(content: @Composable ColumnScope.() -> Unit) {
 @Composable
 internal fun SettingsHeading(title: String, detail: String? = null) {
     Column(Modifier.padding(start = 4.dp, end = 4.dp, top = 16.dp, bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary,
+        Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.semantics { heading() })
         if (!detail.isNullOrBlank()) Text(detail, style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -43,7 +43,7 @@ internal fun SettingsDivider(startInset: Dp = 16.dp) {
 @Composable
 internal fun SettingsNavigationRow(title: String, detail: String, icon: ImageVector, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick).padding(16.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         SectionIcon(icon)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)

@@ -77,12 +77,39 @@ object ConversationImageStore {
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             require(bounds.outWidth in 1..32768 && bounds.outHeight in 1..32768 && bounds.outWidth.toLong() * bounds.outHeight <= 100_000_000)
             var sample = 1
-            val maxSide = if (large) 2048 else 480
-            while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxSide) sample *= 2
+            val maxSide = if (large) 4096 else 640
+            while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxSide ||
+                bounds.outWidth.toLong() * bounds.outHeight / sample / sample > 8_000_000) sample *= 2
             val bitmap = requireNotNull(BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample }))
             require(ComputerConnectionStore(context).find(record)?.key == connection.key)
             memory.put(memoryId, bitmap)
             bitmap
         } }
+    }
+
+    /** Return the unchanged original bytes, usually from the same encrypted preview cache. */
+    suspend fun original(context: Context, recordId: String, image: ConversationImageRef): ByteArray = withContext(Dispatchers.IO) {
+        val record = requireNotNull(TaskInbox(context).read(recordId))
+        val connection = requireNotNull(ComputerConnectionStore(context).find(record))
+        val thread = requireNotNull(record.snapshot.thread_ref ?: record.snapshot.remote_ref).thread_id
+        require(image.id.matches(Regex("[a-f0-9]{64}")))
+        val cacheId = TaskInbox.hash(connection.endpoint + ":" + connection.hostId + ":" + thread + ":" + image.id + ":" + connection.key)
+        val cache = File(context.noBackupFilesDir, "conversation-images/$cacheId.bin")
+        val cached = imageLocks[cacheId.hashCode() and 31].withLock {
+            if (cache.isFile && cache.length() in 29..ConversationImageRules.MAX_BYTES.toLong() + 28)
+                runCatching { ConversationImageCrypto.decrypt(AtomicFile(cache).readFully(), connection.key, connection.hostId, thread, image.id) }.getOrNull()
+            else null
+        }
+        val bytes = cached ?: run {
+            val (current, download) = requests(context).image(recordId, image.id)
+            require(current.key == connection.key && current.hostId == connection.hostId)
+            val url = requireNotNull(RelayRouting.attachmentUrl(context, connection.endpoint, download.url))
+            val encrypted = ConversationImageTransfer.download(http, url, download.size + 28)
+            val plain = ConversationImageCrypto.decrypt(encrypted, connection.key, connection.hostId, thread, image.id)
+            require(plain.size.toLong() == download.size && MessageDigest.getInstance("SHA-256").digest(plain).joinToString("") { "%02x".format(it) } == download.sha256)
+            plain
+        }
+        require(ComputerConnectionStore(context).find(record)?.key == connection.key)
+        bytes
     }
 }

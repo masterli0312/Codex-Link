@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.merge
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import okhttp3.*
@@ -17,6 +18,8 @@ import java.util.Base64
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /** Only active while viewing a conversation. Completion notifications keep their existing connection. */
 class RemoteConversationClient(private val context: Context) {
@@ -28,7 +31,8 @@ class RemoteConversationClient(private val context: Context) {
     private val settings = TaskNotificationStore(context)
     private val computers = ComputerConnectionStore(context)
     private val computerClient = ComputerConnectionClient(context)
-    private val http = OkHttpClient.Builder().addInterceptor(RelayRouting.interceptor(context.applicationContext)).connectTimeout(10, TimeUnit.SECONDS).readTimeout(75, TimeUnit.SECONDS)
+    private val syncStore = ConversationSyncSelectionStore(context)
+    private val http = OkHttpClient.Builder().connectionPool(RelayConnectionPool.pool).addInterceptor(RelayRouting.interceptor(context.applicationContext)).connectTimeout(10, TimeUnit.SECONDS).readTimeout(75, TimeUnit.SECONDS)
         .followRedirects(false).followSslRedirects(false).build()
     private val upload = http.newBuilder().callTimeout(20, TimeUnit.SECONDS).build()
 
@@ -44,14 +48,24 @@ class RemoteConversationClient(private val context: Context) {
         RemoteThreadRef(record.computerHostId, record.computerHostId, "library") else null
 
     /** Separate bounded image transfer. It never replaces a watch, send or pending library request. */
-    suspend fun image(recordId: String, imageId: String): Pair<ComputerConnection, RemoteImageDownload> = withContext(Dispatchers.IO) {
+    suspend fun image(recordId: String, imageId: String): Pair<ComputerConnection, RemoteImageDownload> {
+        val (computer, event) = content(recordId, "image", imageId)
+        require(event.error.isBlank() && event.image?.image_id == imageId) { "IMAGE_UNAVAILABLE" }
+        return computer to requireNotNull(event.image)
+    }
+    suspend fun file(recordId: String, fileId: String): Pair<ComputerConnection, RemoteFileDownload> {
+        val (computer, event) = content(recordId, "file", fileId)
+        require(event.error.isBlank() && event.file?.file_id == fileId) { "FILE_UNAVAILABLE" }
+        return computer to requireNotNull(event.file)
+    }
+    private suspend fun content(recordId: String, resource: String, imageId: String): Pair<ComputerConnection, RemoteEvent> = withContext(Dispatchers.IO) {
         val record = requireNotNull(inbox.read(recordId)); pairing(record)
         val computer = requireNotNull(computers.find(record))
         val ref = requireNotNull(reference(record))
         require(!record.libraryAnchor && RemoteProtocol.validRef(ref, record.snapshot.conversation_id) && imageId.matches(Regex("[a-f0-9]{64}")))
-        val command = RemoteCommand(java.util.UUID.randomUUID().toString(), "image", ref.host_id, ref.thread_id,
-            record.snapshot.conversation_id, ref.baseline_turn, System.currentTimeMillis(), image_id = imageId)
-        val event = withTimeout(40_000) {
+        val command = RemoteCommand(java.util.UUID.randomUUID().toString(), resource, ref.host_id, ref.thread_id,
+            record.snapshot.conversation_id, ref.baseline_turn, System.currentTimeMillis(), image_id = if (resource == "image") imageId else "", file_id = if (resource == "file") imageId else "")
+        val event = withTimeout(if (resource == "file") 210_000L else 40_000L) {
             coroutineScope {
                 val result = async {
                     lines(RemoteProtocol.topic(computer.endpoint, computer.key, computer.hostId, "events") +
@@ -59,7 +73,7 @@ class RemoteConversationClient(private val context: Context) {
                         val envelope = runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull() ?: return@mapNotNull null
                         if (envelope["event"]?.jsonPrimitive?.content != "message") return@mapNotNull null
                         val wire = runCatching { Json.parseToJsonElement(envelope["message"]!!.jsonPrimitive.content).jsonObject }.getOrNull() ?: return@mapNotNull null
-                        RemoteProtocol.event(wire, computer.key)?.takeIf { e -> e.status == "image" && e.request_id == command.id &&
+                        RemoteProtocol.event(wire, computer.key)?.takeIf { e -> e.status == resource && e.request_id == command.id &&
                             e.host_id == ref.host_id && e.thread_id == ref.thread_id && e.conversation_id == record.snapshot.conversation_id }
                     }.first()
                 }
@@ -67,10 +81,9 @@ class RemoteConversationClient(private val context: Context) {
                 result.await()
             }
         }
-        if (event.error in setOf("IMAGE_BUSY", "IMAGE_TRANSFER")) throw IOException(event.error)
-        require(event.error.isBlank() && event.image?.image_id == imageId) { "IMAGE_UNAVAILABLE" }
+        if (event.error in setOf("IMAGE_BUSY", "IMAGE_TRANSFER", "FILE_BUSY", "FILE_TRANSFER")) throw IOException(event.error)
         require(computers.find(record)?.key == computer.key)
-        computer to requireNotNull(event.image)
+        computer to event
     }
 
     private suspend fun <T> userAction(recordId: String, operation: suspend () -> T): T {
@@ -90,6 +103,8 @@ class RemoteConversationClient(private val context: Context) {
     }
     /** Enter the real thread immediately; its watch supplies content without blocking navigation. */
     suspend fun openThread(computer: ComputerConnection, thread: RemoteThreadSummary, archived: Boolean): String = withContext(Dispatchers.IO) {
+        // This method is called by an explicit open/create action, never by catalog discovery.
+        syncStore.add(computer, thread, archived)
         val pending = ConversationIndex.unreadThread(computer, thread, archived)
         val existing = inbox.read(pending.id)?.let { inbox.latestFor(it.id) }
             ?.takeIf { ConversationIndex.matchesThread(it, computer, thread.thread_id) }
@@ -108,10 +123,11 @@ class RemoteConversationClient(private val context: Context) {
         require(record.remoteState?.event?.status in setOf(null, "completed", "interrupted", "failed") && record.remoteState?.transport != "waiting")
         computerClient.ensure(requireNotNull(computers.find(record)))
         val ref = requireNotNull(record.snapshot.remote_ref)
-        require(files.size <= 3 && skills.size <= 4)
+        require(files.size <= SelectedAttachmentRules.MAX_FILES) { "ATTACHMENT_TOO_MANY" }
+        require(skills.size <= 4)
         val computer = requireNotNull(computers.find(record))
         val uploads = files.map { RemoteAttachmentUpload.upload(context, upload, computer, ref.thread_id, it) }
-        require(uploads.sumOf { it.size } <= 16 * 1024 * 1024)
+        require(uploads.sumOf { it.size } <= 16 * 1024 * 1024) { "ATTACHMENT_TOO_LARGE" }
         val command = RemoteProtocol.command(ref, record.snapshot.conversation_id, text, model, effort, mode).copy(permission = record.selectedPermission, attachments = uploads, skill_ids = skills)
         val updated = record.copy(remoteState = RemoteConversationState(command))
         pairing(updated)
@@ -120,7 +136,8 @@ class RemoteConversationClient(private val context: Context) {
         }
     }
 
-    suspend fun create(anchorId: String, projectId: String, text: String, model: String, effort: String, mode: String = "", permission: String = "default"): String = withContext(Dispatchers.IO) {
+    suspend fun create(anchorId: String, projectId: String, text: String, model: String, effort: String, mode: String = "", permission: String = "default",
+        files: List<SelectedRemoteFile> = emptyList(), objective: String = ""): String = withContext(Dispatchers.IO) {
         userAction(anchorId) {
         val anchor = requireNotNull(inbox.read(anchorId)); pairing(anchor)
         computerClient.ensure(requireNotNull(computers.find(anchor)))
@@ -128,26 +145,48 @@ class RemoteConversationClient(private val context: Context) {
         require(RemoteProtocol.validRef(ref, anchor.snapshot.conversation_id) && ConversationEnvironmentRules.validProject(projectId) &&
             text.isNotBlank() && text.toByteArray().size <= 16_384)
         require(mode in setOf("", "plan", "default") && permission in RemoteSessionRules.permissions)
+        require(files.size <= SelectedAttachmentRules.MAX_FILES && (objective.isBlank() || RemoteGoalRules.validObjective(objective) && files.isEmpty()))
+        val computer = requireNotNull(computers.find(anchor))
+        val attachments = files.map { RemoteAttachmentUpload.upload(context, upload, computer, ref.thread_id, it) }
+        require(attachments.sumOf { it.size } <= 16L * 1024 * 1024) { "ATTACHMENT_TOO_LARGE" }
         val command = RemoteCommand(java.util.UUID.randomUUID().toString(), "create", ref.host_id, ref.thread_id,
             anchor.snapshot.conversation_id, ref.baseline_turn, System.currentTimeMillis(), text = text, project_id = projectId,
-            model = model, effort = effort, mode = mode, permission = permission)
+            model = model, effort = effort, mode = mode, permission = permission, attachments = attachments, objective = objective)
         val id = TaskInbox.hash(anchor.endpointHash + ":create:" + command.id)
         val snapshot = TaskConversationSnapshot(conversation_id = TaskInbox.hash(command.id), title = text.lineSequence().first().take(80))
         inbox.save(TaskInboxRecord(id, command.issued_at, "remote-create:" + command.id, anchor.endpointHash, snapshot,
-            hasFullSnapshot = true, remoteState = RemoteConversationState(command), selectedModel = model, selectedEffort = effort, selectedMode = mode, selectedPermission = permission))
+            hasFullSnapshot = true, remoteState = RemoteConversationState(command), selectedModel = model, selectedEffort = effort, selectedMode = mode, selectedPermission = permission,
+            pendingSyncCreation = true))
         // A transport timeout has an ambiguous result. Keep the same persisted request reachable.
         try { publishCommand(id, command) } catch (_: IOException) { }
         id
         }
     }
-    suspend fun followUp(recordId: String, action: String, text: String = "", queueId: String = "") = withContext(Dispatchers.IO) {
+    suspend fun followUp(recordId: String, action: String, text: String = "", queueId: String = "", files: List<SelectedRemoteFile> = emptyList()) = withContext(Dispatchers.IO) {
         val record = requireNotNull(inbox.read(recordId)); pairing(record)
         computerClient.ensure(requireNotNull(computers.find(record)))
         val source = requireNotNull(RemoteFollowUpRules.source(record))
         require(source.command.action != "read" || action == "steer")
-        val command = RemoteProtocol.followUp(source, action, text, queueId)
+        require(files.isEmpty() || action == "steer")
+        require(files.size <= SelectedAttachmentRules.MAX_FILES)
+        val computer = requireNotNull(computers.find(record))
+        val ref = requireNotNull(record.snapshot.thread_ref ?: record.snapshot.remote_ref)
+        val attachments = files.map { RemoteAttachmentUpload.upload(context, upload, computer, ref.thread_id, it) }
+        require(attachments.sumOf { it.size } <= 16L * 1024 * 1024) { "ATTACHMENT_TOO_LARGE" }
+        if (attachments.isNotEmpty()) {
+            val latest = requireNotNull(RemoteFollowUpRules.source(requireNotNull(inbox.read(recordId)))) { "REMOTE_STALE" }
+            require(latest.event?.turn_id == source.event?.turn_id) { "REMOTE_STALE" }
+        }
+        val command = RemoteProtocol.followUp(source, action, text, queueId).copy(attachments = attachments)
         inbox.requestFollowUp(recordId, command)
         publishCommand(recordId, command)
+        if (attachments.isNotEmpty()) withTimeout(45_000) {
+            val result = TaskInbox.changes.mapNotNull {
+                inbox.read(recordId)?.followUps?.firstOrNull { it.command.id == command.id }?.event
+                    ?.takeIf { it.status in setOf("steered", "failed", "unknown") }
+            }.first()
+            require(result.status == "steered") { "REMOTE_STALE" }
+        }
     }
     suspend fun steerQueued(recordId: String, queueId: String) = withContext(Dispatchers.IO) {
         userAction(recordId) {
@@ -156,20 +195,64 @@ class RemoteConversationClient(private val context: Context) {
             followUp(recordId, "steer", entry.command.text, queueId)
         }
     }
-    suspend fun queueReply(recordId: String,text: String) = withContext(Dispatchers.IO) {
-        inbox.queueLocalReply(recordId,text)
+    suspend fun queueReply(recordId: String,text: String, files: List<SelectedRemoteFile> = emptyList()) = withContext(Dispatchers.IO) {
+        inbox.queueLocalReply(recordId,text, files.map { LocalQueuedAttachment(it.uri.toString(), it.name, it.mime) }, awaitingChoice = true)
     }
     suspend fun cancelQueuedReply(recordId: String,key: String) = withContext(Dispatchers.IO) {
         inbox.cancelLocalReply(recordId,key)
+    }
+    suspend fun dismissUnconfirmedReply(recordId: String, key: String) = withContext(Dispatchers.IO) {
+        inbox.dismissUnconfirmedReply(recordId,key)
     }
     suspend fun steerLocalReply(recordId: String,key: String) = withContext(Dispatchers.IO) {
         val record = requireNotNull(inbox.read(recordId))
         val pending = requireNotNull(record.localQueuedReplies.firstOrNull { it.id == key })
         val prior = record.followUps.firstOrNull { it.command.id == key }
-        val command = prior?.command ?: RemoteProtocol.followUp(requireNotNull(RemoteFollowUpRules.source(record)),"steer",pending.text).copy(id = key)
-        if (prior == null) inbox.requestFollowUp(recordId,command)
-        inbox.markLocalReplyAttempted(recordId,key)
-        publishCommand(recordId,command)
+        require(prior == null || FollowUpState.retryable(prior)) { "REMOTE_UNCONFIRMED" } // Only an explicitly rejected malformed request is safe to correct.
+        val source = requireNotNull(RemoteFollowUpRules.source(record)) { "REMOTE_STALE" }
+        val computer = requireNotNull(computers.find(record))
+        val thread = requireNotNull(reference(record)).thread_id
+        val attachments = pending.files.map { file ->
+            RemoteAttachmentUpload.upload(context, upload, computer, thread, SelectedRemoteFile(android.net.Uri.parse(file.uri), file.name, file.mime))
+        }
+        require(attachments.sumOf { it.size } <= 16L * 1024 * 1024) { "ATTACHMENT_TOO_LARGE" }
+        val latest = requireNotNull(RemoteFollowUpRules.source(requireNotNull(inbox.read(recordId)))) { "REMOTE_STALE" }
+        require(latest.event?.turn_id == source.event?.turn_id) { "REMOTE_STALE" }
+        val command = RemoteProtocol.followUp(latest,"steer",pending.text).copy(id = key, attachments = attachments)
+        inbox.requestFollowUp(recordId,command)
+        try {
+            withTimeout(12_000) {
+                coroutineScope {
+                    val response = async(start = CoroutineStart.UNDISPATCHED) {
+                        RemoteFollowUpReceipt.await(command, merge(
+                            TaskInbox.changes.mapNotNull {
+                                inbox.read(recordId)?.followUps?.firstOrNull { it.command.id == key }?.event
+                            },
+                            lines(RemoteProtocol.topic(computer.endpoint, computer.key, computer.hostId, "events") +
+                                "/json?since=" + (command.issued_at / 1000 - 1)).mapNotNull { line ->
+                                val envelope = runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull() ?: return@mapNotNull null
+                                if (envelope["event"]?.jsonPrimitive?.content != "message") return@mapNotNull null
+                                val wire = runCatching { Json.parseToJsonElement(envelope["message"]!!.jsonPrimitive.content).jsonObject }.getOrNull() ?: return@mapNotNull null
+                                RemoteProtocol.event(wire, computer.key)?.takeIf { RemoteFollowUpReceipt.matches(command, it) }
+                            }))
+                    }
+                    val publication = async { publishCommand(recordId, command) }
+                    try {
+                        val receipt = response.await()
+                        inbox.updateFollowUp(recordId,key) { state ->
+                            if (RemoteProtocol.accepts(state, receipt)) state.copy(event = receipt, transport = "received") else state
+                        }
+                        ConversationSyncTrace.record("steer_ack", receipt.seq, context = context)
+                    } finally { publication.cancel() }
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            inbox.markFollowUpUnconfirmed(recordId,key)
+            throw IllegalStateException("REMOTE_UNCONFIRMED",e)
+        } catch (e: IOException) {
+            inbox.markFollowUpUnconfirmed(recordId,key)
+            throw IllegalStateException("REMOTE_UNCONFIRMED",e)
+        }
     }
     private suspend fun drainQueuedReply(recordId: String) {
         val pending = inbox.claimLocalReply(recordId) ?: return
@@ -215,7 +298,7 @@ class RemoteConversationClient(private val context: Context) {
         userAction(recordId) {
         val record = requireNotNull(inbox.read(recordId)); pairing(record)
         val ref = requireNotNull(reference(record))
-        val root = record.remoteState?.takeIf { it.command.action in RemoteGoalRules.rootActions }
+        val root = record.remoteState?.takeIf { it.command.action in RemoteGoalRules.rootActions || it.event?.goal != null }
         val confirmed = listOfNotNull(root?.event, record.goalResult).filter { !it.partial && !it.attachment_pending && it.error.isBlank() }
             .maxByOrNull { it.seq }
         require(action == "goal_read" || confirmed != null)
@@ -223,7 +306,9 @@ class RemoteConversationClient(private val context: Context) {
             require(!record.snapshot.running && (!ConversationIndex.hasPendingTurn(record) || root?.event?.status == "unknown"))
         }
         computerClient.ensure(requireNotNull(computers.find(record)))
-        val command = RemoteGoalRules.command(ref, record.snapshot.conversation_id, action, confirmed?.goal, root?.command?.id.orEmpty(), objective, budget).copy(permission = record.selectedPermission)
+        val command = RemoteGoalRules.command(ref, record.snapshot.conversation_id, action, confirmed?.goal, root?.command?.id.orEmpty(), objective, budget).copy(permission = record.selectedPermission,
+            model = if (action in RemoteGoalRules.rootActions) record.selectedModel else "",
+            effort = if (action in RemoteGoalRules.rootActions) record.selectedEffort else "")
         inbox.requestGoal(recordId, command)
         publishCommand(recordId, command)
         }
@@ -252,9 +337,47 @@ class RemoteConversationClient(private val context: Context) {
         publishCommand(recordId, command)
         command.id
     }
+    /** A list row is not being watched. Its mutation must receive its own acknowledgement. */
+    suspend fun manageThread(recordId: String, action: String, threadId: String, name: String = "", archived: Boolean = false) = withContext(Dispatchers.IO) {
+        userAction(recordId) {
+            require(action in setOf("rename", "archive", "unarchive"))
+            val record = requireNotNull(inbox.read(recordId)); pairing(record)
+            val ref = requireNotNull(reference(record))
+            require(RemoteProtocol.validRef(ref, record.snapshot.conversation_id))
+            val computer = requireNotNull(computers.find(record))
+            val command = RemoteCommand(java.util.UUID.randomUUID().toString(), action, ref.host_id, ref.thread_id,
+                record.snapshot.conversation_id, ref.baseline_turn, System.currentTimeMillis(), text = name,
+                read_thread_id = threadId, archived = archived)
+            inbox.requestLibrary(recordId, command)
+            val event = withTimeout(45_000) {
+                coroutineScope {
+                    val response = async(start = CoroutineStart.UNDISPATCHED) {
+                        ConversationManagementResponse.await(command,
+                            lines(RemoteProtocol.topic(computer.endpoint, computer.key, computer.hostId, "events") +
+                                "/json?since=" + (command.issued_at / 1000 - 1)).mapNotNull { line ->
+                                val envelope = runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull() ?: return@mapNotNull null
+                                if (envelope["event"]?.jsonPrimitive?.content != "message") return@mapNotNull null
+                                val wire = runCatching { Json.parseToJsonElement(envelope["message"]!!.jsonPrimitive.content).jsonObject }.getOrNull() ?: return@mapNotNull null
+                                var result = RemoteProtocol.event(wire, computer.key) ?: return@mapNotNull null
+                                if (!ConversationManagementResponse.matches(command, result)) return@mapNotNull null
+                                if (result.partial) downloadEvent(computer.endpoint, envelope, wire, computer.key)?.let { result = it }
+                                result
+                            })
+                    }
+                    publishCommand(recordId, command)
+                    response.await()
+                }
+            }
+            require(computers.find(record)?.key == computer.key)
+            inbox.updateLibrary(recordId, event)
+        }
+    }
+
     private suspend fun ensureConversationWatch(recordId: String, force: Boolean = false) {
         val record = inbox.read(recordId) ?: return
         if (record.libraryAnchor || record.archived) return
+        val computer = computers.find(record) ?: return
+        if (!ConversationSyncRules.allows(record, computer, syncStore.read(computer))) return
         val ref = reference(record) ?: return
         val query = record.libraryRequest
         val result = record.libraryResult?.takeIf { it.request_id == query?.id }
@@ -264,7 +387,8 @@ class RemoteConversationClient(private val context: Context) {
         // Do not replace their pending request or lose their acknowledgement.
         if (query != null && (result == null || result.attachment_pending) && age < 45_000 &&
             !(force && query.action == "read" && query.watch)) return
-        if (!force && query?.action == "read" && query.watch && age < 480_000 && result?.error?.isBlank() == true && !result.partial && !result.attachment_pending) return
+        if (!force && query?.action == "read" && query.watch && age < 480_000 && result?.error?.isBlank() == true && !result.partial && !result.attachment_pending &&
+            record.contentValidatedAt >= query.issued_at) return
         library(recordId, "read", readThread = ref.thread_id, watch = true)
     }
     suspend fun checkFork(recordId: String) = withContext(Dispatchers.IO) {
@@ -314,7 +438,8 @@ class RemoteConversationClient(private val context: Context) {
         var lastPresenceObservation = 0L
         var indexedAt = 0L
         fun indexRecords(): List<TaskInboxRecord> {
-            val records = inbox.list().filter { computer.matches(it) }
+              val selected = syncStore.read(computer)
+              val records = inbox.list().filter { ConversationSyncRules.allows(it, computer, selected) }
             requestRecords.clear()
             records.forEach { record -> record.remoteState?.command?.id?.let { requestRecords[it] = record.id } }
             indexedAt = System.currentTimeMillis()
@@ -336,6 +461,11 @@ class RemoteConversationClient(private val context: Context) {
                     val wire = runCatching { Json.parseToJsonElement(envelope["message"]!!.jsonPrimitive.content).jsonObject }.getOrNull() ?: return@collect
                     var event = RemoteProtocol.event(wire, computer.key) ?: return@collect
                     if (event.host_id != computer.hostId) return@collect
+                    if (event.status == "thread_activity") {
+                        syncStore.markActivity(computer, event.thread_id, event.turn_id, event.activity_running == true,
+                            event.at, event.activity_completed)
+                        return@collect
+                    }
                     // Every fresh authenticated host response proves presence, including
                     // catalog/watch replies that are handled by the foreground reader.
                     val observedAt = System.currentTimeMillis()
@@ -352,6 +482,7 @@ class RemoteConversationClient(private val context: Context) {
                         state.command.id == event.request_id && state.command.thread_id == event.thread_id &&
                             state.command.conversation_id == event.conversation_id
                     } == true } ?: return@collect
+                    if (!ConversationSyncRules.allows(record, computer, syncStore.read(computer))) return@collect
                     if (RemoteProtocol.accepts(record.remoteState!!, event)) {
                         if (event.attachment_pending) downloadEvent(computer.endpoint, envelope, wire, computer.key)?.let { event = it }
                         if (computers.endpoint(record.endpointHash)?.key != computer.key) return@collect
@@ -382,8 +513,21 @@ class RemoteConversationClient(private val context: Context) {
             body = Base64.getDecoder().decode(wire["encrypted"]!!.jsonPrimitive.content)
         } else body = wire.toString().toByteArray()
         try {
-            upload.newCall(builder.post(body.toRequestBody("application/octet-stream".toMediaType())).build()).execute().use {
-                if (!it.isSuccessful) throw IOException("REMOTE_PUBLISH")
+            if (command.action == "steer") ConversationSyncTrace.record("steer_publish", command.issued_at, context = context)
+            suspendCancellableCoroutine<Unit> { continuation ->
+                val call = upload.newCall(builder.post(body.toRequestBody("application/octet-stream".toMediaType())).build())
+                continuation.invokeOnCancellation { call.cancel() }
+                call.enqueue(object : Callback {
+                    override fun onFailure(call: Call, e: IOException) {
+                        if (!continuation.isCancelled) continuation.resumeWithException(e)
+                    }
+                    override fun onResponse(call: Call, response: Response) { response.use {
+                        if (!continuation.isCancelled) {
+                            if (it.isSuccessful) continuation.resume(Unit)
+                            else continuation.resumeWithException(IOException("REMOTE_PUBLISH"))
+                        }
+                    } }
+                })
             }
         } catch (e: IOException) {
             if (command.action in setOf("queue", "steer", "cancel_queue")) inbox.updateFollowUp(recordId, command.id) { it.copy(transport = "unconfirmed") }
@@ -395,6 +539,11 @@ class RemoteConversationClient(private val context: Context) {
     // Includes synchronous OkHttp recovery publishes and encrypted cache access. Callers may
     // launch from a Compose effect, so the entire subscription must stay off the UI thread.
     suspend fun listen(recordId: String) = withContext(Dispatchers.IO) {
+        val initial = inbox.read(recordId) ?: return@withContext
+        if (!initial.libraryAnchor) {
+            val computer = computers.find(initial) ?: return@withContext
+            if (!ConversationSyncRules.allows(initial, computer, syncStore.read(computer))) return@withContext
+        }
         launch { inbox.read(recordId)?.let { computers.find(it) }?.let { runCatching { computerClient.ensure(it) } } }
         // Recovery is automatic; the UI never requires users to poll transport state.
         val recovery = launch {
@@ -432,7 +581,7 @@ class RemoteConversationClient(private val context: Context) {
             var failure: Exception? = null
             try {
                 val url = RemoteProtocol.topic(endpoint, key, ref.host_id, "events") + "/json?since=" +
-                    ((record.remoteState?.event?.at ?: System.currentTimeMillis()) / 1000 - 1).coerceAtLeast(0)
+                    ConversationOpeningRules.replaySince(record.remoteState?.event?.at, System.currentTimeMillis())
                 lines(url).collect { line ->
                     val started = android.os.SystemClock.elapsedRealtime()
                     val envelope = runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull() ?: return@collect

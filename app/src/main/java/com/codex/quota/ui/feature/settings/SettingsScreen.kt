@@ -16,6 +16,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -42,7 +43,7 @@ private val pages = entries
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel, modifier: Modifier = Modifier, page: String = "home", onNavigate: (String) -> Unit = {}, onNavigateBack: () -> Unit = {}) {
-    val preferences by viewModel.preferencesState.collectAsState()
+    val preferences by viewModel.preferencesState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var showClearData by remember { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -65,7 +66,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, modifier: Modifier = Modifier, 
                     Spacer(Modifier.height(4.dp))
                     SettingsGroup {
                         entries.forEachIndexed { index, entry ->
-                            if (index > 0) SettingsDivider(startInset = 72.dp)
+                            if (index > 0) SettingsDivider(startInset = 64.dp)
                             SettingsNavigationRow(stringResource(entry.title), stringResource(entry.subtitle), entry.icon) { onNavigate(entry.page) }
                         }
                     }

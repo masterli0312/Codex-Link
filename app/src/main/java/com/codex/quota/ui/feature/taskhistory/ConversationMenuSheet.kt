@@ -20,9 +20,9 @@ import com.codex.quota.R
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ConversationMenuSheet(
-    showArchived: Boolean, canSync: Boolean, canClear: Boolean, canNew: Boolean,
+    showArchived: Boolean, canSync: Boolean,
     onDismiss: () -> Unit, onSync: () -> Unit, onArchive: () -> Unit,
-    onSettings: () -> Unit, onInfo: () -> Unit, onClear: () -> Unit, onNew: () -> Unit
+    onSettings: () -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)) {
@@ -36,15 +36,11 @@ internal fun ConversationMenuSheet(
                 }
                 IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, stringResource(R.string.conversation_menu_close)) }
             }
-            MenuAction(Icons.Outlined.Add, stringResource(R.string.conversation_new), canNew, onClick = onNew)
             MenuAction(Icons.Outlined.Sync, stringResource(R.string.conversation_sync), canSync, onClick = onSync)
             MenuAction(if (showArchived) Icons.AutoMirrored.Outlined.Chat else Icons.Outlined.Archive,
                 stringResource(if (showArchived) R.string.conversation_recent else R.string.conversation_archived), canSync, onClick = onArchive)
             HorizontalDivider(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-            MenuAction(Icons.Outlined.Settings, stringResource(R.string.remote_configure), onClick = onSettings)
-            MenuAction(Icons.Outlined.Info, stringResource(R.string.conversation_info), onClick = onInfo)
-            Spacer(Modifier.height(8.dp))
-            MenuAction(Icons.Outlined.DeleteOutline, stringResource(R.string.task_history_clear), canClear, destructive = true, onClick = onClear)
+            MenuAction(Icons.Outlined.Settings, stringResource(R.string.conversation_connection_manage), onClick = onSettings)
         }
     }
 }

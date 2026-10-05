@@ -9,7 +9,8 @@ import android.os.Bundle
 import androidx.core.app.NotificationCompat
 import com.codex.quota.R
 
-/** Use the launcher artwork on notification cards and its monochrome mark in the status bar. */
+/** Cards use the launcher artwork; standard Android status bars keep the alpha-only mark.
+ * No duplicate large icon on the right of the message. */
 internal object NotificationBranding {
     @Volatile private var launcherBitmap: Bitmap? = null
 
@@ -28,24 +29,29 @@ internal object NotificationBranding {
             manager.activeNotifications.forEach { active ->
                 val notification = active.notification
                 val updated = Notification.Builder.recoverBuilder(context, notification)
-                    .setSmallIcon(R.drawable.ic_notification)
-                    .setLargeIcon(appIcon(context))
-                    .addExtras(Bundle().apply { putParcelable("android.appInfo", context.applicationInfo) })
+                    .setSmallIcon(R.drawable.ic_notification_brand)
+                    .setLargeIcon(null as Bitmap?)
+                    .addExtras(iconExtras(context))
                     .setOnlyAlertOnce(true)
                 notification.publicVersion?.let { public ->
                     updated.setPublicVersion(Notification.Builder.recoverBuilder(context, public)
-                        .setSmallIcon(R.drawable.ic_notification)
-                        .setLargeIcon(appIcon(context))
-                        .addExtras(Bundle().apply { putParcelable("android.appInfo", context.applicationInfo) })
+                        .setSmallIcon(R.drawable.ic_notification_brand)
+                        .setLargeIcon(null as Bitmap?)
+                        .addExtras(iconExtras(context))
                         .build())
                 }
                 manager.notify(active.tag, active.id, updated.build())
             }
         }
     }
-}
 
+    fun iconExtras(context: Context) = Bundle().apply {
+        putParcelable("android.appInfo", context.applicationInfo)
+    }
+
+}
 internal fun NotificationCompat.Builder.withAppIcon(context: Context): NotificationCompat.Builder = apply {
-    setSmallIcon(R.drawable.ic_notification)
-    setLargeIcon(NotificationBranding.appIcon(context))
+    setSmallIcon(R.drawable.ic_notification_brand)
+    setLargeIcon(null as Bitmap?)
+    addExtras(NotificationBranding.iconExtras(context))
 }

@@ -46,6 +46,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -55,6 +56,7 @@ import androidx.compose.ui.unit.sp
 import com.codex.quota.domain.model.AccountWithUsage
 import com.codex.quota.ui.components.AccountCard
 import java.util.Calendar
+import com.codex.quota.ui.theme.UiMetrics
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -65,13 +67,13 @@ fun DashboardScreen(
     onNavigateToCreditHistory: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val refreshingIds by viewModel.refreshingAccountIds.collectAsState()
-    val feedback by viewModel.refreshFeedback.collectAsState()
+    val refreshingIds by viewModel.refreshingAccountIds.collectAsStateWithLifecycle()
+    val feedback by viewModel.refreshFeedback.collectAsStateWithLifecycle()
     var managing by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<AccountWithUsage?>(null) }
-    val accounts by viewModel.accountsState.collectAsState()
-    val isRefreshing by viewModel.isRefreshing.collectAsState()
+    val accounts by viewModel.accountsState.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val anyRefreshing = isRefreshing || refreshingIds.isNotEmpty()
-    val errorMessage by viewModel.errorMessage.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
 
@@ -156,8 +158,8 @@ fun DashboardScreen(
             ) {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    contentPadding = PaddingValues(horizontal = UiMetrics.PageGutter, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(UiMetrics.SectionGap)
                 ) {
                     items(accounts, key = { it.account.id }) { item ->
                         AccountCard(

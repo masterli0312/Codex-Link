@@ -26,7 +26,6 @@ internal fun ConversationEnvironmentSelector(computers: List<ComputerConnection>
     hostName: String, projects: List<RemoteThreadSummary>, project: String, enabled: Boolean,
     now: Long, onComputer: (ComputerConnection) -> Unit, onProject: (String) -> Unit, onCloud: () -> Unit) {
     var computersOpen by remember { mutableStateOf(false) }
-    var projectsOpen by remember(computer?.id) { mutableStateOf(false) }
     val computerName = computer?.name?.ifBlank { hostName }?.ifBlank { stringResource(R.string.conversation_paired_computer) }
         ?: stringResource(R.string.conversation_select_computer)
     Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -55,32 +54,7 @@ internal fun ConversationEnvironmentSelector(computers: List<ComputerConnection>
                 }
             }
         }
-        TextButton(onClick = { projectsOpen = true }, enabled = enabled && computer != null,
-            modifier = Modifier.testTag("new-conversation-project"), contentPadding = PaddingValues(horizontal = 12.dp)) {
-            Icon(if (project == ConversationEnvironmentRules.NO_PROJECT) Icons.Outlined.Computer else Icons.Outlined.FolderOpen,
-                null, Modifier.size(20.dp))
-            Spacer(Modifier.width(10.dp))
-            Text(projects.firstOrNull { it.project_id == project }?.project_name ?: stringResource(R.string.conversation_no_project),
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 240.dp),
-                color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyLarge)
-            Icon(Icons.Outlined.KeyboardArrowDown, null, Modifier.padding(start = 8.dp).size(18.dp))
-        }
     }
-    if (projectsOpen) AlertDialog(onDismissRequest = { projectsOpen = false }, shape = RoundedCornerShape(28.dp),
-        containerColor = MaterialTheme.colorScheme.surface, title = { Text(stringResource(R.string.conversation_select_project)) },
-        text = { Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()).selectableGroup()) {
-            ProjectChoice(stringResource(R.string.conversation_no_project), "", project == ConversationEnvironmentRules.NO_PROJECT,
-                noProject = true) { onProject(ConversationEnvironmentRules.NO_PROJECT); projectsOpen = false }
-            if (projects.isNotEmpty()) {
-                Text(stringResource(R.string.conversation_recent_projects), Modifier.padding(top = 20.dp, bottom = 8.dp),
-                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                projects.forEach { entry -> key(entry.project_id) {
-                    ProjectChoice(entry.project_name, entry.project_path, project == entry.project_id) {
-                        onProject(entry.project_id); projectsOpen = false
-                    }
-                } }
-            }
-        } }, confirmButton = { TextButton(onClick = { projectsOpen = false }) { Text(stringResource(R.string.action_cancel)) } })
 }
 
 @Composable

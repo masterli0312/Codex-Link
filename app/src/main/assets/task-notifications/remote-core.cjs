@@ -76,12 +76,13 @@ function validInputAnswers(input,answers){
 }
 function validateCommand(c,host,now=Date.now()){
   return !!(c&&typeof c==='object'&&!Array.isArray(c)&&isUuid(c.id)&&c.host_id===host&&isUuid(c.thread_id)&&c.conversation_id===hash(c.thread_id)&&
-    ['send','create','stop','approve','answer_input','status','models','threads','read','history','activities','rename','archive','unarchive','fork','queue','steer','cancel_queue','presence','session_info','skills','image',...goals.ACTIONS].includes(c.action)&&goals.validGoalCommand(c)&&Number.isSafeInteger(c.issued_at)&&now-c.issued_at<=120000&&c.issued_at-now<=15000&&
+    ['send','create','stop','approve','answer_input','status','models','threads','read','history','activities','rename','archive','unarchive','fork','queue','steer','cancel_queue','presence','session_info','skills','image','file',...goals.ACTIONS].includes(c.action)&&goals.validGoalCommand(c)&&Number.isSafeInteger(c.issued_at)&&now-c.issued_at<=120000&&c.issued_at-now<=15000&&
     (!['send','create','queue','steer'].includes(c.action)||(typeof c.text==='string'&&c.text.trim()&&Buffer.byteLength(c.text)<=16384&&typeof c.baseline_turn==='string'&&c.baseline_turn.length<=128))&&
     (!['queue','steer'].includes(c.action)||typeof c.expected_turn_id==='string'&&c.expected_turn_id.length>0&&c.expected_turn_id.length<=128)&&
     (c.action!=='cancel_queue'||isUuid(c.queue_id))&&
     (c.action!=='steer'||!c.queue_id||isUuid(c.queue_id))&&
     (c.action!=='image'||typeof c.image_id==='string'&&/^[a-f0-9]{64}$/.test(c.image_id))&&
+    (c.action!=='file'||typeof c.file_id==='string'&&/^[a-f0-9]{64}$/.test(c.file_id))&&
     (c.action!=='answer_input'||isUuid(c.input_id)&&typeof c.expected_turn_id==='string'&&c.expected_turn_id.length>0&&c.expected_turn_id.length<=128&&inputAnswersShape(c.answers))&&
     (c.action!=='create'||typeof c.project_id==='string'&&(c.project_id==='default'||/^[a-f0-9]{64}$/.test(c.project_id)))&&
     (!['read','history','activities','rename','archive','unarchive'].includes(c.action)||isUuid(c.read_thread_id))&&
@@ -90,19 +91,20 @@ function validateCommand(c,host,now=Date.now()){
     (c.mode===undefined||['','default','plan'].includes(c.mode))&&
     (c.stream_version===undefined||c.stream_version===0||c.stream_version===1)&&
     (c.permission===undefined||optionsProtocol.PERMISSIONS.includes(c.permission))&&
-    uploads.validAttachments(c.attachments)&&(!c.attachments?.length||['send','create'].includes(c.action))&&
+    (c.action!=='create'||c.objective===undefined||c.objective===''||typeof c.objective==='string'&&c.objective.trim()&&Array.from(c.objective).length<=4000&&Buffer.byteLength(c.objective)<=16384&&!c.attachments?.length)&&
+    uploads.validAttachments(c.attachments)&&(!c.attachments?.length||['send','create','steer'].includes(c.action))&&
     (c.skill_ids===undefined||Array.isArray(c.skill_ids)&&c.skill_ids.length<=4&&new Set(c.skill_ids).size===c.skill_ids.length&&c.skill_ids.every(v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v)))&&
     (c.action!=='rename'||typeof c.text==='string'&&c.text.trim()&&Buffer.byteLength(c.text)<=240&&!/[\r\n\0]/.test(c.text))&&
     (c.cursor===undefined||typeof c.cursor==='string'&&Buffer.byteLength(c.cursor)<=4096)&&
     (c.archived===undefined||typeof c.archived==='boolean')&&
     (c.search===undefined||typeof c.search==='string'&&Buffer.byteLength(c.search)<=240&&!/[\r\n\0]/.test(c.search))&&
     ['model','effort'].every(k=>c[k]===undefined||(typeof c[k]==='string'&&c[k].length<=128&&!/[\r\n\0]/.test(c[k])))&&
-    (['send','create','models','threads','read','history','activities','rename','archive','unarchive','fork','presence','session_info','skills','image',...goals.ACTIONS].includes(c.action)||isUuid(c.target_id))&&(c.action!=='approve'||(isUuid(c.approval_id)&&typeof c.allow==='boolean'&&typeof c.expected_turn_id==='string'&&c.expected_turn_id.length>0&&c.expected_turn_id.length<=128)));
+    (['send','create','models','threads','read','history','activities','rename','archive','unarchive','fork','presence','session_info','skills','image','file',...goals.ACTIONS].includes(c.action)||isUuid(c.target_id))&&(c.action!=='approve'||(isUuid(c.approval_id)&&typeof c.allow==='boolean'&&typeof c.expected_turn_id==='string'&&c.expected_turn_id.length>0&&c.expected_turn_id.length<=128)));
 }
 function normalizeModels(models){
   const seen=new Set();return models.filter(m=>!m.hidden&&typeof m.model==='string'&&m.model.length<=128&&
     !/[\r\n\0]/.test(m.model)&&!seen.has(m.model)&&seen.add(m.model)).slice(0,100).map(m=>({
-      model:m.model,name:bounded(m.displayName||m.model,160),
+      model:m.model,name:bounded(m.displayName||m.model,160),description:bounded(m.description,800),is_default:m.isDefault===true,
       efforts:(m.supportedReasoningEfforts||[]).map(e=>e.reasoningEffort).filter(e=>typeof e==='string'&&e.length<=32&&!/[\r\n\0]/.test(e)).slice(0,16),
       default_effort:typeof m.defaultReasoningEffort==='string'?m.defaultReasoningEffort:''
   }));
@@ -112,8 +114,10 @@ function normalizeModes(values){
 }
 async function selection(client,c,local){
   if(!c.model&&!c.effort&&!c.mode)return {};
-  if(c.mode){let modes=[];try{modes=normalizeModes(await client.modes());}catch{}if(!modes.includes(c.mode))throw Error('MODE_UNAVAILABLE');}
-  const raw=await client.models(),models=normalizeModels(raw);
+  // Both are independent, read-only discovery calls on this native client.
+  const [raw,modes]=await Promise.all([client.models(),c.mode?client.modes().then(normalizeModes).catch(()=>[]):Promise.resolve([])]);
+  if(c.mode&&!modes.includes(c.mode))throw Error('MODE_UNAVAILABLE');
+  const models=normalizeModels(raw);
   const selected=c.model||local.model||(c.mode?raw.find(m=>m.isDefault&&!m.hidden)?.model:'');
   const model=models.find(m=>m.model===selected);
   if(!model||(c.effort&&!model.efforts.includes(c.effort)))throw Error('INVALID_MODEL_SELECTION');
@@ -158,8 +162,8 @@ async function checkNativeBaseline(client,c,local){
 }
 const activity=require('./remote-activity.cjs');
 class RemoteController{
-  constructor({directory,key,hostId,clientFactory,resolve,emit,recover,readLocal,readRevision,readContext,endpoint,imageFetch}){
-    Object.assign(this,{directory,key,hostId,clientFactory,resolve,emit,recover,readLocal,readRevision,readContext,endpoint,imageFetch});this.active=null;this.seq=Date.now();
+  constructor({directory,key,hostId,clientFactory,resolve,emit,recover,readLocal,readRevision,readContext,endpoint,imageFetch,questionFactory}){
+    Object.assign(this,{directory,key,hostId,clientFactory,resolve,emit,recover,readLocal,readRevision,readContext,endpoint,imageFetch,questionFactory});this.active=null;this.seq=Date.now();
     this.file=path.join(directory,'remote-journal.json');this.journal={};
     try{this.journal=JSON.parse(fs.readFileSync(this.file,'utf8'));}catch{}
     this.seq=Math.max(this.seq,...Object.values(this.journal).map(r=>Number.isSafeInteger(r.seq)?r.seq:0));
@@ -167,6 +171,71 @@ class RemoteController{
       if(['accepted','running','approval','input_required'].includes(r.status))r.status='unknown';
       if(r.status==='queued'){r.status='cancelled';r.error='QUEUE_INTERRUPTED';}
     }
+  }
+  // Reattach only a verified shared-server turn. No turn/start, interrupt, setting
+  // overrides or deferred queue replay are permitted during component upgrades.
+  async restoreSharedTask(){
+    for(const [id,row] of Object.entries(this.journal)){
+      if(this.active||row.status!=='unknown'||row.goal_task||!row.turn_id)continue;
+      let saved;try{saved=decode('event',JSON.parse(fs.readFileSync(path.join(this.directory,'remote-'+id+'.json'),'utf8')),this.key);}catch{continue;}
+      if(saved?.status!=='running'||saved.request_id!==id||saved.host_id!==this.hostId||saved.thread_id!==row.thread_id||
+        saved.turn_id!==row.turn_id||saved.goal||saved.queued_entries?.length||!isUuid(row.thread_id))continue;
+      const client=this.clientFactory();if(!client.supportsLiveWatch){client.close();continue;}
+      const thread=row.actual_thread_id||row.thread_id;
+      const c={id,host_id:this.hostId,thread_id:row.thread_id,conversation_id:hash(row.thread_id),action:row.actual_thread_id?'create':'send',
+        text:saved.active_input||'',stream_version:saved.stream_version||0};
+      const a={c,client,turn:row.turn_id,reply:saved.reply||'',pending:new Map(),items:new Map(),queue:[],activities:saved.activities||[],
+        input:c.text,startAttempted:true,actualThread:row.actual_thread_id};
+      try{
+        client.setHandlers((m,p)=>this.event(a,m,p).catch(()=>{}),(id,m,p)=>this.request(a,id,m,p).catch(()=>{}));await client.connect();
+        const meta=(await client.call('thread/read',{threadId:thread,includeTurns:false})).thread;
+        const last=(await client.call('thread/turns/list',{threadId:thread,limit:1,sortDirection:'desc',itemsView:'summary'})).data?.[0];
+        if(meta?.id!==thread||meta.status?.type!=='active'||last?.id!==a.turn||last.status!=='inProgress')throw Error('RECOVERY_NOT_ACTIVE');
+        try{if((await goals.getGoal(client,thread))?.status==='active')throw Error('RECOVERY_GOAL');}catch(e){if(e.rpcCode!==-32601)throw e;}
+        this.active=a;
+        await client.call('thread/resume',{threadId:thread,excludeTurns:true});
+        if(this.active!==a)return;
+        const snapshot=await library.readSnapshot(client,thread,this.hostId,this.readLocal);
+        if(this.active!==a)return;
+        if(!snapshot.running||snapshot.thread_ref?.baseline_turn!==a.turn)throw Error('RECOVERY_NOT_ACTIVE');
+        for(const item of snapshot.messages.filter(m=>m.role==='assistant'&&m.id?.startsWith(a.turn+':')))a.items.set(item.id.slice(a.turn.length+1),item.text);
+        a.reply=bounded([...a.items.values()].join('\n\n'),65536);
+        a.activities=activity.mergeActivities(a.activities,snapshot.activities);
+        await this.startQuestionTracking(a,meta);await this.update(c,'running',{reply:a.reply,turn_id:a.turn,snapshot,stream_reset:true});return;
+      }catch{if(this.active===a)this.active=null;client.close();}
+    }
+  }
+  async startQuestionTracking(a,metadata){
+    if(!this.questionFactory||!a.client?.supportsLiveWatch||this.active!==a)return;
+    const meta=metadata||(await a.client.call('thread/read',{threadId:a.actualThread||a.c.thread_id,includeTurns:false})).thread;
+    if(this.active!==a)return;
+    a.metaPath=meta?.path;a.questions=this.questionFactory(a.actualThread||a.c.thread_id);
+    a.questionTimer=setInterval(()=>{
+      if(this.active!==a){clearInterval(a.questionTimer);return;}
+      const input=this.activeDesktopQuestion(a),key=input?.id||'';
+      if(key!==a.questionKey){a.questionKey=key;this.refreshActive(a).catch(()=>{});}
+    },500);a.questionTimer.unref?.();
+  }
+  activeDesktopQuestion(a){
+    return a.questions?.read(a.metaPath,a.turn||'').find(q=>!Object.values(this.journal).some(e=>e.question_id===q.id&&e.status==='completed'));
+  }
+  async answerActiveDesktopInput(c){
+    const a=this.active;
+    if(!a||a.c.id!==c.target_id||a.c.thread_id!==c.thread_id||a.pending.has(c.input_id))return false;
+    if(this.journal[c.id])return true;
+    const input=this.activeDesktopQuestion(a);
+    if(!input||input.id!==c.input_id)return false;
+    if(input.turn_id!==c.expected_turn_id||!a.turn||a.ending||!validInputAnswers(input,c.answers))return true;
+    if(Object.values(this.journal).some(e=>e.question_id===input.id&&e.status!=='failed'))return true;
+    this.journal[c.id]={status:'unknown',thread_id:c.thread_id,question_id:input.id};this.persist();
+    try{
+      const text=require('./conversation-questions.cjs').answerText(input,c.answers);
+      const turn=a.turn;
+      const result=await a.client.steer(a.actualThread||c.thread_id,turn,text,c.id);
+      if(result.turnId!==turn)throw Error('STEER_MISMATCH');
+      this.journal[c.id].status='completed';this.persist();await this.refreshActive(a);
+    }catch(e){this.journal[c.id].status=e.rpcCode?'failed':'unknown';this.persist();if(this.active===a)await this.refreshActive(a);}
+    return true;
   }
   persist(){
     fs.mkdirSync(this.directory,{recursive:true});
@@ -182,17 +251,23 @@ class RemoteController{
     // event subscription without any model/provider/permission overrides or generation.
     // Independent stdio mode remains a persisted-history reader and never resumes.
     this.stopWatching();
-    const w={c,expiresAt:Date.now()+600000,fingerprint:'',revision:'',lastRead:0,busy:false};this.watching=w;
+    const w={c,expiresAt:Date.now()+600000,fingerprint:'',revision:'',lastRead:0,busy:false,pending:new Map(),questions:this.questionFactory?.(c.read_thread_id)};this.watching=w;
     await this.pollWatch(w);
     if(this.watching===w){w.timer=setInterval(()=>this.pollWatch(w).catch(()=>{}),WATCH_POLL_MS);w.timer.unref?.();}
   }
   onWatchEvent(w,method,p){
     if(this.watching!==w)return;
+    if(method==='serverRequest/resolved'&&p.threadId===w.c.read_thread_id){
+      for(const [key,entry] of w.pending)if(entry.id===p.requestId)w.pending.delete(key);
+      if(w.live)this.emitWatch(w,w.live.value).catch(()=>{});return;
+    }
     if(method==='bridge/disconnected'){
       w.client=null;w.live=null;w.revision='';w.lastRead=0;return;
     }
     if(!w.live?.apply(method,p))return;
-    if(method==='turn/completed'){
+    const userInput=['item/started','item/completed'].includes(method)&&p.item?.type==='userMessage';
+    if(method==='turn/completed'||method==='turn/started'||userInput){
+      // New user input is latency-sensitive; text deltas still use bounded batching.
       clearTimeout(w.flush);w.flush=null;this.emitWatch(w,liveTail(w.live.value)).catch(()=>{});
     }else if(!w.flush){
       w.flush=setTimeout(()=>{w.flush=null;if(this.watching===w&&w.live)this.emitWatch(w,liveTail(w.live.value)).catch(()=>{});},200);
@@ -201,19 +276,61 @@ class RemoteController{
   }
   async emitWatch(w,value){
     if(this.watching!==w||Date.now()>=w.expiresAt)return;
-    const snapshot=structuredClone(value),fingerprint=hash(JSON.stringify(snapshot));
+    const input=[...w.pending.values()].find(e=>e.kind==='input')?.input||
+      w.questions?.read(w.metaPath,w.live?.turn||'').find(q=>!Object.values(this.journal).some(e=>e.question_id===q.id&&e.status==='completed'));
+    const snapshot=structuredClone(value),fingerprint=hash(JSON.stringify([snapshot,input||null]));
     if(fingerprint===w.fingerprint)return;w.fingerprint=fingerprint;
     await this.emit({id:crypto.randomUUID(),request_id:w.c.id,host_id:this.hostId,thread_id:w.c.thread_id,
-      conversation_id:w.c.conversation_id,status:'snapshot',seq:++this.seq,at:Date.now(),reply:'',snapshot});
+      conversation_id:w.c.conversation_id,status:input?'input_required':'snapshot',seq:++this.seq,at:Date.now(),reply:'',snapshot,
+      ...(input?{user_input:input,turn_id:input.turn_id}:{})});
+  }
+  async onWatchRequest(w,id,method,p){
+    if(this.watching!==w||p.threadId!==w.c.read_thread_id||!w.client?.supportsLiveWatch)return;
+    if(method!=='item/tool/requestUserInput')return; // Other desktop tools/approvals retain their owner.
+    const input=normalizeUserInput(p);if(!input)return;
+    if([...w.pending.values()].some(e=>e.id===id))return;
+    w.pending.set(input.id,{id,kind:'input',input});
+    if(w.live)await this.emitWatch(w,w.live.value);
+  }
+  async answerWatchInput(c){
+    const w=this.watching;
+    if(!w||w.c.id!==c.target_id||w.c.thread_id!==c.thread_id||w.c.read_thread_id!==c.thread_id||!w.client?.supportsLiveWatch)return false;
+    if(this.journal[c.id])return true;
+    const native=w.pending.get(c.input_id);
+    const input=native?.input||w.questions?.read(w.metaPath,w.live?.turn||'').find(q=>q.id===c.input_id);
+    if(!input||input.turn_id!==c.expected_turn_id||!validInputAnswers(input,c.answers)||
+      Object.values(this.journal).some(e=>e.question_id===input.id&&e.status!=='failed'))return true;
+    this.journal[c.id]={status:'unknown',thread_id:c.thread_id,question_id:input.id};this.persist();
+    try{
+      if(native){w.pending.delete(c.input_id);await w.client.answer(native.id,{answers:Object.fromEntries(Object.entries(c.answers).map(([id,answers])=>[id,{answers}]))});}
+      else{
+        const text=require('./conversation-questions.cjs').answerText(input,c.answers);
+        const tail=await w.client.call('thread/turns/list',{threadId:c.thread_id,limit:1,sortDirection:'desc',itemsView:'summary'});
+        const last=tail.data?.[0];
+        if(last?.status==='inProgress'){
+          const result=await w.client.call('turn/steer',{threadId:c.thread_id,expectedTurnId:last.id,input:[{type:'text',text}],clientUserMessageId:c.id});
+          if(result.turnId!==last.id)throw Error('INPUT_REPLY_UNCONFIRMED');
+        }else await w.client.call('turn/start',{threadId:c.thread_id,input:[{type:'text',text}],clientUserMessageId:c.id});
+      }
+      this.journal[c.id].status='completed';this.persist();
+      if(w.live)await this.emitWatch(w,w.live.value);
+    }catch(e){
+      this.journal[c.id].status=e.rpcCode?'failed':'unknown';this.persist();
+      if(native)w.pending.set(c.input_id,native);
+      if(w.live){w.fingerprint='';await this.emitWatch(w,w.live.value);}
+    }
+    return true;
   }
   async pollWatch(w=this.watching){
     if(!w||this.watching!==w||w.busy)return;
     if(Date.now()>=w.expiresAt){this.stopWatching();return;}
     w.busy=true;
     try{
-      if(!w.client){w.client=this.clientFactory();w.client.setHandlers((m,p)=>this.onWatchEvent(w,m,p),id=>w.client?.reject(id));await w.client.connect();}
+      if(!w.client){w.client=this.clientFactory();w.client.setHandlers((m,p)=>this.onWatchEvent(w,m,p),(id,m,p)=>this.onWatchRequest(w,id,m,p).catch(()=>{}));await w.client.connect();}
       const meta=(await w.client.call('thread/read',{threadId:w.c.read_thread_id,includeTurns:false})).thread;
       if(meta?.id!==w.c.read_thread_id)throw Error('MISSING_THREAD');
+      w.metaPath=meta.path;
+      if(w.live)await this.emitWatch(w,liveTail(w.live.value));
       // Native events supply the live tail. A slower reconciliation is retained for
       // missed notifications; a persistence read must never overwrite newer deltas.
       const settling=w.live?.value.running&&['idle','notLoaded'].includes(meta.status?.type);
@@ -263,6 +380,11 @@ class RemoteController{
       ...(active.goalTask?{goal:active.goal,goal_waiting:active.goalWaiting===true}:{}),
       activities:active.activities||[],
       queued_entries:(active.queue||[]).map(q=>({id:q.id,text:bounded(q.text,512)})),...extra};
+    if(active?.goalTask&&active.actualThread&&!extra.snapshot) {
+      const ref={host_id:this.hostId,thread_id:active.actualThread,baseline_turn:active.turn||active.lastTurn||'new'};
+      extra.snapshot={conversation_id:hash(active.actualThread),title:bounded(c.text,160),messages:[],reply:active.reply||'',
+        running:active.goal?.status==='active',remote_ref:ref,thread_ref:ref};
+    }
     const e={id:crypto.randomUUID(),request_id:c.id,host_id:this.hostId,thread_id:c.thread_id,conversation_id:c.conversation_id,
       status,seq:++this.seq,at:Date.now(),reply:'',stream_version:c.stream_version===1?1:0,...extra};
     e.reply=bounded(e.reply,65536);
@@ -282,7 +404,18 @@ class RemoteController{
     await this.emit(e);return e;
   }
   async replay(c,id){
-    const old=this.journal[id];if(!old||old.thread_id!==c.thread_id)return;
+    const old=this.journal[id];
+    if(!old){
+      // A status query cannot execute or repeat a missing side effect. It must still end the phone's wait.
+      await this.emit({id:crypto.randomUUID(),request_id:id,host_id:this.hostId,thread_id:c.thread_id,
+        conversation_id:c.conversation_id,status:'unknown',error:'REQUEST_NOT_FOUND',seq:++this.seq,at:Date.now(),reply:'',stream_reset:true});return;
+    }
+    if(old.thread_id!==c.thread_id)return;
+    if(this.active?.c.id===id){
+      const a=this.active;let snapshot;
+      if(a.actualThread)try{snapshot=await library.readSnapshot(a.client,a.actualThread,this.hostId,this.readLocal);}catch{}
+      if(this.active===a)await this.refreshActive(a,snapshot?{snapshot}:{});return;
+    }
     let state;try{state=decode('event',JSON.parse(fs.readFileSync(path.join(this.directory,'remote-'+id+'.json'),'utf8')),this.key);}catch{}
     if(old.status==='unknown'&&UUID.test(old.actual_thread_id)&&UUID.test(old.fork_source)&&old.fork_source===c.read_thread_id&&old.thread_id===old.fork_source){
       let client;
@@ -302,7 +435,30 @@ class RemoteController{
   }
   async handle(c){
     if(!validateCommand(c,this.hostId))return;
+    if(c.action==='answer_input'&&(await this.answerActiveDesktopInput(c)||await this.answerWatchInput(c)))return;
     if(goals.ACTIONS.includes(c.action)){await goals.handleGoal(this,c);return;}
+    if(c.action==='file'){
+      const files=require('./conversation-files.cjs');
+      const base={id:crypto.randomUUID(),request_id:c.id,host_id:this.hostId,thread_id:c.thread_id,conversation_id:c.conversation_id,status:'file',seq:++this.seq,at:Date.now(),reply:''};
+      if((this.activeFiles||0)>=2){await this.emit({...base,error:'FILE_BUSY'});return;}
+      this.activeFiles=(this.activeFiles||0)+1;let client;
+      try{
+        if(!files.hasFile(c.thread_id,c.file_id)){
+          client=this.clientFactory();client.setHandlers(()=>{},id=>client.reject(id));await client.connect();
+          const meta=(await client.call('thread/read',{threadId:c.thread_id,includeTurns:false})).thread;
+          if(meta?.id!==c.thread_id)throw Error('FILE_UNAVAILABLE');
+          let cursor='';
+          for(let n=0;n<12;n++){
+            const page=await library.historyPage(client,c.thread_id,cursor);
+            library.snapshot({...meta,turns:page.turns},this.hostId);
+            if(files.hasFile(c.thread_id,c.file_id))break;
+            cursor=page.next_cursor;if(!cursor)break;
+          }
+        }
+        await this.emit({...base,file:await files.publishFile(this,c,this.imageFetch)});
+      }catch(e){await this.emit({...base,error:['FILE_TOO_LARGE','FILE_TRANSFER'].includes(e.message)?e.message:'FILE_UNAVAILABLE'});}
+      finally{client?.close();this.activeFiles--;}return;
+    }
     if(c.action==='image'){
       const base={id:crypto.randomUUID(),request_id:c.id,host_id:this.hostId,thread_id:c.thread_id,conversation_id:c.conversation_id,status:'image',seq:++this.seq,at:Date.now(),reply:''};
       if((this.activeImages||0)>=3){await this.emit({...base,error:'IMAGE_BUSY'});return;}
@@ -340,9 +496,13 @@ class RemoteController{
     if(['threads','read','history','activities','rename','archive','unarchive','fork'].includes(c.action)){
       const managing=['rename','archive','unarchive','fork'].includes(c.action);
       if(managing&&this.journal[c.id]){await this.replay(c,c.id);return;}
-      if(this.libraryBusy)return;this.libraryBusy=true;let client;
       const base={id:crypto.randomUUID(),request_id:c.id,host_id:this.hostId,thread_id:c.thread_id,conversation_id:c.conversation_id,
         status:c.action==='threads'?'threads':c.action==='history'?'history':c.action==='activities'?'activities':['rename','archive','unarchive'].includes(c.action)?'managed':'snapshot',seq:++this.seq,at:Date.now(),reply:''};
+      // A background catalog read must not swallow a user's archive/rename request.
+      // Mutations have their own bounded slot and remain serialized, with no implicit retry.
+      const slot=managing?'managementBusy':'libraryBusy';
+      if(this[slot]){await this.emit({...base,error:'LIBRARY_BUSY'});return;}
+      this[slot]=true;let client;
       try{
         client=this.clientFactory();client.setHandlers(()=>{},id=>client.reject(id));await client.connect();
         if(c.action==='threads')await this.emit({...base,...await library.threadPage(client,{cursor:c.cursor,archived:c.archived,search:c.search})});
@@ -372,9 +532,13 @@ class RemoteController{
           const error=known?e.message:e.rpcCode===-32601?'FORK_UNAVAILABLE':e.rpcCode?'FORK_FAILED':'FORK_UNCONFIRMED';
           if(this.journal[c.id])this.journal[c.id].error=error;
           await this.update(c,known||e.rpcCode?'failed':'unknown',{error});
+        }else if(managing){
+          const known=['BUSY','MISSING_THREAD','INVALID_MANAGEMENT','INVALID_NAME','NO_ARCHIVABLE_RECORD','ARCHIVE_RECORD_MISSING'].includes(e.message);
+          // Persist confirmed failures too, so a repeated delivery cannot replay a mutation.
+          await this.update(c,known||e.rpcCode?'failed':'unknown',{error:known?e.message:'LIBRARY_UNAVAILABLE'});
         }else await this.emit({...base,error:e.message==='BUSY'?'BUSY':c.action==='history'&&e.rpcCode===-32601?'HISTORY_UNAVAILABLE':'LIBRARY_UNAVAILABLE'});
       }
-      finally{client?.close();this.libraryBusy=false;}return;
+      finally{client?.close();this[slot]=false;}return;
     }
     if(c.action==='models'){
       if(this.catalogBusy)return;this.catalogBusy=true;let client;
@@ -399,9 +563,11 @@ class RemoteController{
         }
         this.journal[c.id]={status:'unknown',thread_id:c.thread_id};this.persist();
         try{
+          const inputs=await uploads.prepareAttachments(this,c);
+          if(this.watching!==w||!w.live?.value.running||w.live.turn!==c.expected_turn_id)throw Error('STALE_ACTIVE_TURN');
           // Steer the already running desktop turn. Never defer to turn/start after completion.
           const result=await w.client.call('turn/steer',{threadId:c.thread_id,expectedTurnId:c.expected_turn_id,
-            input:[{type:'text',text:c.text}],clientUserMessageId:c.id});
+            input:[{type:'text',text:c.text},...inputs],clientUserMessageId:c.id});
           if(result.turnId!==c.expected_turn_id)throw Error('STEER_MISMATCH');
           await this.update(c,'steered',{turn_id:result.turnId,parent_request_id:w.c.id});
         }catch(e){await this.update(c,e.rpcCode?'failed':'unknown',{error:'STEER_REJECTED'});}
@@ -432,7 +598,9 @@ class RemoteController{
       }
       this.journal[c.id]={status:'unknown',thread_id:c.thread_id};this.persist();
       try{
-        const result=await a.client.steer(a.actualThread||a.c.thread_id,c.expected_turn_id,c.text,c.id);
+        const inputs=await uploads.prepareAttachments(this,c);
+        if(this.active!==a||a.ending||a.stopping||a.turn!==c.expected_turn_id)throw Error('STALE_ACTIVE_TURN');
+        const result=await a.client.steer(a.actualThread||a.c.thread_id,c.expected_turn_id,c.text,c.id,inputs);
         if(result.turnId!==c.expected_turn_id)throw Error('STEER_MISMATCH');
         if(promoted)await this.update(promoted,'steered',{turn_id:result.turnId,parent_request_id:a.c.id});
         await this.update(c,'steered',{turn_id:result.turnId,parent_request_id:a.c.id});
@@ -466,10 +634,23 @@ class RemoteController{
           await client.resume(c.thread_id,local);
           this.resolve(c);await checkNativeBaseline(client,c,local);
         }
+        if(c.action==='create'&&c.objective){
+          active.goalTask=true;active.goalWaiting=true;active.events=Promise.resolve();active.startAttempted=true;
+          this.journal[c.id]={...this.journal[c.id],goal_task:true};this.persist();
+          const serialized=work=>active.events=active.events.then(work).catch(async()=>{
+            if(this.active===active){await this.update(c,'unknown',{error:'GOAL_UNCONFIRMED'});client.close();this.active=null;}
+          });
+          client.setHandlers((m,p)=>serialized(()=>this.event(active,m,p)),(id,m,p)=>serialized(()=>this.request(active,id,m,p)));
+          await client.resume(active.actualThread,{...local,model:options.model,resumeEffort:options.effort});
+          active.goal=goals.normalizeGoal((await client.call('thread/goal/set',{threadId:active.actualThread,status:'active',objective:c.objective})).goal,active.actualThread);
+          if(this.active===active){await this.startQuestionTracking(active).catch(()=>{});await this.refreshActive(active);}
+          return;
+        }
         options.inputs=[...await optionsProtocol.selectedSkills(client,c,local),...await uploads.prepareAttachments(this,c)];
         if(this.active!==active||active.stopping)return;
         await this.startTurn(active,active.actualThread||c.thread_id,c.text,c.id,options);
         if(this.active===active){
+          await this.startQuestionTracking(active).catch(()=>{});
           if(active.stopping)await this.interruptActive(active);
           else await this.refreshActive(active);
         }
@@ -484,7 +665,7 @@ class RemoteController{
     const a=this.active;
     if(!a||a.c.id!==c.target_id||a.c.thread_id!==c.thread_id)return;
     if(c.action==='stop'&&a.goalTask){
-      await goals.handleGoal(this,{...c,action:'goal_pause',expected_goal_updated_at:a.goal?.updated_at||0,expected_goal_created_at:a.goal?.created_at||0,expected_goal_hash:a.goal?hash(a.goal.objective):''});return;
+      await goals.handleGoal(this,{...c,thread_id:a.actualThread||c.thread_id,conversation_id:hash(a.actualThread||c.thread_id),action:'goal_pause',expected_goal_updated_at:a.goal?.updated_at||0,expected_goal_created_at:a.goal?.created_at||0,expected_goal_hash:a.goal?hash(a.goal.objective):''});return;
     }
     if(c.action==='stop'){
       a.stopping=true;await this.cancelQueue(a,'QUEUE_STOPPED');
@@ -549,12 +730,13 @@ class RemoteController{
       a.client.close();if(this.active===a)this.active=null;
     }
   }
-  async refreshActive(a){
+  async refreshActive(a,extra={}){
     const pending=a.pending.entries().next().value;
     const input=pending?.[1].kind==='input';
-    await this.update(a.c,input?'input_required':pending?'approval':'running',{reply:a.reply,turn_id:a.turn,
-      ...(input?{user_input:pending[1].input}:pending?{approval_id:pending[0],approval_text:pending[1].text,
-        approval_kind:pending[1].approvalKind,approval_item_id:pending[1].item,approval_can_allow:pending[1].canAllow}:{})});
+    const desktopInput=!pending?this.activeDesktopQuestion(a):null;
+    await this.update(a.c,input||desktopInput?'input_required':pending?'approval':'running',{reply:a.reply,turn_id:a.turn||'',
+      ...(input||desktopInput?{user_input:input?pending[1].input:desktopInput}:pending?{approval_id:pending[0],approval_text:pending[1].text,
+        approval_kind:pending[1].approvalKind,approval_item_id:pending[1].item,approval_can_allow:pending[1].canAllow}:{}),...extra});
   }
   async cancelQueue(a,error){
     const pending=a.queue.splice(0);for(const q of pending)await this.update(q,'cancelled',{error});
@@ -601,7 +783,7 @@ class RemoteController{
       await this.refreshActive(a);return;
     }
     if(a.goalTask&&['thread/goal/updated','thread/goal/cleared'].includes(method)){
-      a.goal=method==='thread/goal/cleared'?null:goals.normalizeGoal(p.goal,a.c.thread_id);
+      a.goal=method==='thread/goal/cleared'?null:goals.normalizeGoal(p.goal,a.actualThread||a.c.thread_id);
       if(!a.turn&&a.goal?.status!=='active'){await goals.finishGoal(this,a,a.goal?.status==='complete'?'completed':'interrupted');return;}
       await this.refreshActive(a);return;
     }
@@ -613,8 +795,13 @@ class RemoteController{
       if(a.goalTask)await this.refreshActive(a);return;
     }
     if(!a.turn||p.turnId&&p.turnId!==a.turn)return;
+    if(method==='thread/compacted'){
+      const previous=a.activities.findLast(item=>item.turn_id===a.turn&&item.type==='compaction');
+      const item=activity.projectItem(a.turn,{id:previous?previous.id.slice(a.turn.length+1):'context-compacted',type:'contextCompaction',status:'completed'});
+      a.activities=activity.mergeActivities(a.activities,[item]);await this.refreshActive(a);
+    }
     if(['item/started','item/completed'].includes(method)){
-      const item=activity.projectItem(p.turnId||a.turn,p.item);
+      const item=activity.projectItem(p.turnId||a.turn,p.item,-1,a.actualThread||a.c.thread_id);
       if(item){if(method==='item/started'&&!p.item.status)item.status='inProgress';a.activities=activity.mergeActivities(a.activities,[item]);await this.refreshActive(a);}
     }
     if(method==='turn/diff/updated'&&typeof p.diff==='string'){
@@ -643,7 +830,7 @@ class RemoteController{
       if(this.active!==a)return;
       if(a.goalTask){
         a.lastTurn=a.turn;a.turn=null;a.pending.clear();
-        try{a.goal=await goals.getGoal(a.client,a.c.thread_id);}catch{
+        try{a.goal=await goals.getGoal(a.client,a.actualThread||a.c.thread_id);}catch{
           await this.update(a.c,'unknown',{error:'GOAL_UNCONFIRMED',reply:a.reply,...(snapshot?{snapshot}:{})});
           a.client.close();if(this.active===a)this.active=null;return;
         }
@@ -693,6 +880,7 @@ class RemoteController{
     }
   }
   close(){this.stopWatching();if(this.active){
+    clearInterval(this.active.questionTimer);
     for(const q of this.active.queue||[])if(this.journal[q.id])Object.assign(this.journal[q.id],{status:'cancelled',error:'QUEUE_INTERRUPTED'});
     this.persist();clearTimeout(this.active.timer);this.active.client?.close();this.active=null;
   }}

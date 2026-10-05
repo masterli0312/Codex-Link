@@ -74,7 +74,7 @@ internal fun RemoteStatusPanel(id: String, state: RemoteConversationState, contr
         else -> R.string.remote_waiting
     }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(stringResource(status), style = MaterialTheme.typography.bodySmall,
+        if (status != R.string.remote_running) Text(stringResource(status), style = MaterialTheme.typography.bodySmall,
             color = if (event?.status == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
         if (event?.partial == true) Text(stringResource(R.string.remote_partial), style = MaterialTheme.typography.bodySmall)
         if (error) Text(stringResource(R.string.remote_network_error), color = MaterialTheme.colorScheme.error)
@@ -95,9 +95,6 @@ internal fun RemoteStatusPanel(id: String, state: RemoteConversationState, contr
                     }
                 }
             }
-        }
-        if (event?.status == "input_required" && controlsEnabled && !event.attachment_pending) event.user_input?.let { input ->
-            RemoteInputCard(input) { answers -> client.answerInput(id, input.id, answers, library) }
         }
         if (controlsEnabled && !library && state.transport == "unconfirmed" && event == null) {
             TextButton(onClick = {
@@ -141,21 +138,33 @@ internal fun RemoteComposer(id: String, record: TaskInboxRecord, onFork: () -> U
         } }
     }
     var sending by remember { mutableStateOf(false) }
+    var steeringIds by remember(id) { mutableStateOf<Set<String>>(emptySet()) }
     var error by remember { mutableStateOf(false) }
     var unreachable by remember { mutableStateOf(false) }
+    fun pendingAction(action: suspend () -> Unit) { scope.launch {
+        try { action(); error = false }
+        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (_: Exception) { error = true }
+    } }
     var preparationError by remember { mutableStateOf<Int?>(null) }
     var stopping by remember { mutableStateOf(false) }
-    var followMode by rememberSaveable(preferenceId) { mutableStateOf("queue") }
-    var followMenu by remember { mutableStateOf(false) }
-    val goalTask = state?.command?.action in RemoteGoalRules.rootActions
-    LaunchedEffect(goalTask) { if (goalTask) followMode = "steer" }
-    var showModels by remember { mutableStateOf(false) }
-    var showEfforts by remember { mutableStateOf(false) }
-    var showMode by remember { mutableStateOf(false) }
+    val followMode = "steer"
+    val goalTask = state?.command?.action in RemoteGoalRules.rootActions || state?.event?.goal != null
+
+
+
     var addMenu by remember { mutableStateOf(false) }
     var permissionSheet by remember { mutableStateOf(false) }
     var modelMenu by remember { mutableStateOf(false) }
     var skillsSheet by remember { mutableStateOf(false) }
+    val pluginStore = remember { ComposerPluginStore(context.applicationContext) }
+    val pluginHost = (record.snapshot.thread_ref ?: record.snapshot.remote_ref)?.host_id ?: record.computerHostId
+    var visiblePluginIds by remember(record.endpointHash, pluginHost) { mutableStateOf<Set<String>?>(null) }
+    var pluginPreferencesLoaded by remember(record.endpointHash, pluginHost) { mutableStateOf(false) }
+    LaunchedEffect(record.endpointHash, pluginHost) {
+        visiblePluginIds = withContext(Dispatchers.IO) { pluginStore.read(record.endpointHash, pluginHost) }
+        pluginPreferencesLoaded = true
+    }
     var attachmentError by remember { mutableStateOf<String?>(null) }
     val fileSaver = remember {
         listSaver<List<SelectedRemoteFile>, String>(
@@ -236,7 +245,7 @@ internal fun RemoteComposer(id: String, record: TaskInboxRecord, onFork: () -> U
         val sendingSkills = selectedSkills
         sending = true; error = false; unreachable = false; preparationError = null
         scope.launch {
-            try { if (running) if (goalTask) client.followUp(id,"steer",prompt) else client.queueReply(id,prompt) else client.send(id, prompt, model, effort, mode, sendingFiles, sendingSkills); files = emptyList(); selectedSkills = emptyList(); if (text == prompt || text.isBlank()) { text = ""; preferences.updateAsync(record.endpointHash, preferenceId) { it.copy(draft = "") }.await() } }
+            try { if (running) client.queueReply(id,prompt,sendingFiles) else client.send(id, prompt, model, effort, mode, sendingFiles, sendingSkills); files = emptyList(); selectedSkills = emptyList(); if (text == prompt || text.isBlank()) { text = ""; preferences.updateAsync(record.endpointHash, preferenceId) { it.copy(draft = "") }.await() } }
             catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
             catch (e: Exception) {
                 error = true; unreachable = e.message == "COMPUTER_UNREACHABLE"
@@ -247,59 +256,68 @@ internal fun RemoteComposer(id: String, record: TaskInboxRecord, onFork: () -> U
         }
     }
     Column(Modifier.fillMaxWidth().imePadding().padding(horizontal = 12.dp, vertical = 10.dp)) {
-        if (record.snapshot.running && !running) Text(stringResource(R.string.remote_busy),
-            Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         record.localQueuedReplies.forEach { entry ->
             key(entry.id) {
-                QueuedMessageChip(entry.text,!sending && record.followUps.none { it.command.id == entry.id && FollowUpState.pending(it) },running,
-                    onEdit = { sending = true; scope.launch {
-                        try { client.cancelQueuedReply(id,entry.id); text = listOf(entry.text,text).filter { it.isNotBlank() }.joinToString("\n"); error = false }
-                        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                val followUp = record.followUps.firstOrNull { it.command.id == entry.id }
+                val waiting = entry.id in steeringIds || followUp?.let(FollowUpState::pending) == true
+                fun discard() = scope.launch {
+                    try {
+                        if (followUp?.let(FollowUpState::recoverable) == true) client.dismissUnconfirmedReply(id,entry.id)
+                        else client.cancelQueuedReply(id,entry.id)
+                        error = false
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (_: Exception) { error = true }
+                }
+                QueuedMessageChip(entry.text, !waiting, running && (followUp == null || FollowUpState.retryable(followUp)),
+                    onEdit = { scope.launch {
+                        try {
+                            val restored = SelectedAttachmentRules.merge(files, entry.files.map { SelectedRemoteFile(android.net.Uri.parse(it.uri), it.name, it.mime) }) { it.uri }
+                            if (followUp?.let(FollowUpState::recoverable) == true) client.dismissUnconfirmedReply(id,entry.id)
+                            else client.cancelQueuedReply(id,entry.id)
+                            files = restored; text = listOf(entry.text,text).filter { it.isNotBlank() }.joinToString("\n"); error = false
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                         catch (_: Exception) { error = true }
-                        finally { sending = false }
                     } },
-                    onSteer = { sending = true; scope.launch {
-                        try { client.steerLocalReply(id,entry.id); error = false }
-                        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-                        catch (_: Exception) { error = true }
-                        finally { sending = false }
-                    } },
-                    onCancel = { sending = true; scope.launch {
-                        try { client.cancelQueuedReply(id,entry.id); error = false }
-                        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-                        catch (_: Exception) { error = true }
-                        finally { sending = false }
-                    } })
+                    onSteer = {
+                        if (entry.id !in steeringIds) {
+                            steeringIds = steeringIds + entry.id
+                            scope.launch {
+                                try { client.steerLocalReply(id,entry.id); error = false }
+                                catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                                catch (_: Exception) { preparationError = R.string.remote_delivery_unconfirmed }
+                                finally { steeringIds = steeringIds - entry.id }
+                            }
+                        }
+                    }, onCancel = { discard() })
+                if (waiting) Text(stringResource(R.string.remote_delivery_pending), style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
                 Spacer(Modifier.height(8.dp))
             }
         }
         record.followUps.filter { FollowUpState.visible(it) && it.command.id !in record.localQueuedReplies.map { p -> p.id } &&
             (it.command.queue_id.isBlank() || it.command.action != "steer") }.takeLast(4).forEach { entry ->
-            if (FollowUpState.queued(entry)) QueuedMessageChip(entry.command.text,!sending,running && !desktopTurn,
-                onEdit = { sending = true; scope.launch {
-                    try { client.followUp(id,"cancel_queue",queueId = entry.command.id); text = listOf(entry.command.text,text).filter { it.isNotBlank() }.joinToString("\n") }
-                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-                    catch (_: Exception) { error = true }
-                    finally { sending = false }
-                } },
-                onSteer = { sending = true; scope.launch {
-                    try { client.steerQueued(id,entry.command.id); error = false }
-                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-                    catch (_: Exception) { error = true }
-                    finally { sending = false }
-                } },
-                onCancel = { scope.launch {
-                    try { client.followUp(id,"cancel_queue",queueId = entry.command.id) }
-                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-                    catch (_: Exception) { error = true }
-                } })
-            else Row(Modifier.fillMaxWidth(),verticalAlignment = Alignment.CenterVertically) {
-                Text(entry.command.text,Modifier.weight(1f),maxLines = 1,overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall,color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (FollowUpState.recoverable(entry)) TextButton(onClick = { text = listOf(entry.command.text,text).filter { it.isNotBlank() }.joinToString("\n") }) { Text(stringResource(R.string.remote_restore_draft)) }
-            }
+            if (FollowUpState.queued(entry)) QueuedMessageChip(entry.command.text, !sending, running && !desktopTurn,
+                onEdit = { pendingAction { client.followUp(id,"cancel_queue",queueId = entry.command.id); text = listOf(entry.command.text,text).filter { it.isNotBlank() }.joinToString("\n") } },
+                onSteer = { pendingAction { client.steerQueued(id,entry.command.id) } },
+                onCancel = { pendingAction { client.followUp(id,"cancel_queue",queueId = entry.command.id) } })
+            else if (FollowUpState.recoverable(entry)) {
+                QueuedMessageChip(entry.command.text, true, false,
+                    onEdit = { scope.launch {
+                        try { client.dismissUnconfirmedReply(id,entry.command.id); text = listOf(entry.command.text,text).filter { it.isNotBlank() }.joinToString("\n"); error = false }
+                        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                        catch (_: Exception) { error = true }
+                    } }, onSteer = {}, onCancel = { scope.launch {
+                        try { client.dismissUnconfirmedReply(id,entry.command.id) }
+                        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                        catch (_: Exception) { error = true }
+                    } })
+                Text(stringResource(R.string.remote_delivery_unconfirmed), style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
+            } else Text(stringResource(R.string.remote_delivery_pending), style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerLowest) {
+        Surface(shape = RoundedCornerShape(com.codex.quota.ui.theme.UiMetrics.ComposerRadius), color = MaterialTheme.colorScheme.surface,
+            border = androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             attachmentError?.let { Text(stringResource(when (it) {
                 "ATTACHMENT_TOO_LARGE" -> R.string.remote_attachment_too_large
@@ -313,11 +331,20 @@ internal fun RemoteComposer(id: String, record: TaskInboxRecord, onFork: () -> U
             }
             if (selectedSkills.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 selectedSkills.forEach { skill -> InputChip(selected = true, enabled = !sending, onClick = { selectedSkills = selectedSkills - skill },
-                    label = { Text(skillCatalog?.skills?.firstOrNull { it.id == skill }?.name.orEmpty(), maxLines = 1) }, trailingIcon = { Icon(Icons.Outlined.Close, stringResource(R.string.remote_attachment_remove), Modifier.size(16.dp)) }) }
+                    label = { Text(skillCatalog?.skills?.firstOrNull { it.id == skill }?.let(::skillDisplayName).orEmpty(), maxLines = 1) }, trailingIcon = { Icon(Icons.Outlined.Close, stringResource(R.string.remote_attachment_remove), Modifier.size(16.dp)) }) }
             }
-            if (!available && (files.isNotEmpty() || selectedSkills.isNotEmpty())) Text(stringResource(R.string.remote_attachments_wait),
+            if (!available && selectedSkills.isNotEmpty()) Text(stringResource(R.string.remote_attachments_wait),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (mode == "plan") Text(stringResource(R.string.remote_mode_plan), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            if (mode == "plan" || goalTask) ComposerModeTag(goalTask, !sending) {
+                if (goalTask) scope.launch {
+                    try { client.goal(id, "goal_pause") }
+                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (_: Exception) { error = true }
+                } else {
+                    mode = "default"
+                    scope.launch { withContext(Dispatchers.IO) { TaskInbox(context).setOptions(id, model, effort, "default") } }
+                }
+            }
             voiceError?.let { Text(stringResource(R.string.remote_voice_error, it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
             if (listening) Text(stringResource(voiceStage), style = MaterialTheme.typography.bodySmall)
             if (error) Text(stringResource(preparationError ?: if (unreachable) R.string.computer_unreachable else R.string.remote_network_error), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -331,43 +358,59 @@ internal fun RemoteComposer(id: String, record: TaskInboxRecord, onFork: () -> U
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box {
-                        IconButton(onClick = { addMenu = true; if (skillCatalog == null) refreshSkills() }, enabled = !sending) { Icon(Icons.Outlined.Add, stringResource(R.string.conversation_add)) }
+                        IconButton(onClick = { addMenu = true; if (skillCatalog == null && record.skillsRequest == null) refreshSkills(); if (catalog == null && !modelLoading) refreshModels() }, enabled = !sending) { Icon(Icons.Outlined.Add, stringResource(R.string.conversation_add)) }
                         DropdownMenu(addMenu, { addMenu = false }, shape = RoundedCornerShape(24.dp), modifier = Modifier.widthIn(min = 240.dp, max = 280.dp), containerColor = MaterialTheme.colorScheme.surfaceContainerLowest) {
-                            DropdownMenuItem(text = { Text(stringResource(R.string.remote_upload_photo)) }, leadingIcon = { Icon(Icons.Outlined.PhotoLibrary, null) }, enabled = canPrepare,
+                            DropdownMenuItem(text = { Text(stringResource(R.string.remote_upload_photo)) }, leadingIcon = { Icon(ComposerIcons.Photo, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }, enabled = canPrepare,
                                 onClick = { addMenu = false; photos.launch(arrayOf("image/*")) })
-                            DropdownMenuItem(text = { Text(stringResource(R.string.remote_upload_file)) }, leadingIcon = { Icon(Icons.Outlined.InsertDriveFile, null) }, enabled = canPrepare,
+                            DropdownMenuItem(text = { Text(stringResource(R.string.remote_upload_file)) }, leadingIcon = { Icon(ComposerIcons.File, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }, enabled = canPrepare,
                                 onClick = { addMenu = false; documents.launch(arrayOf("*/*")) })
-                            DropdownMenuItem(text = { Text(stringResource(R.string.remote_mode_plan)) }, leadingIcon = { Icon(Icons.Outlined.Checklist, null) },
-                                trailingIcon = { if (mode == "plan") Icon(Icons.Outlined.Check, null) }, enabled = canPrepare,
-                                onClick = { addMenu = false; showMode = true; if (catalog?.modes.isNullOrEmpty()) refreshModels() })
-                            DropdownMenuItem(text = { Text(stringResource(R.string.remote_goal_title)) }, leadingIcon = { Icon(Icons.Outlined.Flag, null) }, onClick = { addMenu = false; onGoal() })
-                            DropdownMenuItem(text = { Text(stringResource(R.string.conversation_fork)) }, leadingIcon = { Icon(Icons.Outlined.ForkRight, null) },
+                            DropdownMenuItem(text = { Text(stringResource(R.string.remote_mode_plan)) }, leadingIcon = { Icon(ComposerIcons.Plan, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                                trailingIcon = { if (mode == "plan") Icon(Icons.Outlined.Check, null) }, enabled = canPrepare && "plan" in catalog?.modes.orEmpty(),
+                                onClick = {
+                                    addMenu = false; mode = if (mode == "plan") "default" else "plan"
+                                    val selected = mode
+                                    scope.launch { withContext(Dispatchers.IO) { TaskInbox(context).setOptions(id, model, effort, selected) } }
+                                })
+                            DropdownMenuItem(text = { Text(stringResource(R.string.remote_goal_title)) }, leadingIcon = { Icon(ComposerIcons.Goal, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }, onClick = { addMenu = false; onGoal() })
+                            DropdownMenuItem(text = { Text(stringResource(R.string.conversation_fork)) }, leadingIcon = { Icon(ComposerIcons.Branch, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) },
                                 enabled = available && !sending && record.snapshot.remote_ref != null,
                                 onClick = { addMenu = false; onFork() })
                             HorizontalDivider(Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
-                            DropdownMenuItem(text = { Column {
-                                Text(stringResource(R.string.remote_skills_title))
-                                Text(stringResource(R.string.remote_skills_source), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            } }, leadingIcon = { Icon(Icons.Outlined.Extension, null) }, enabled = canPrepare,
-                                onClick = { addMenu = false; skillsSheet = true; refreshSkills() })
+                            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(stringResource(R.string.remote_plugins_heading), Modifier.weight(1f), style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                TextButton(onClick = { addMenu = false; skillsSheet = true; if (skillCatalog == null) refreshSkills() },
+                                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)) {
+                                    Text(stringResource(R.string.composer_manage_short))
+                                }
+                            }
+                            val visibleSkills = visiblePluginIds?.let { ids -> skillCatalog?.skills.orEmpty().filter { it.id in ids } }
+                                ?: ComposerCatalog.skills(skillCatalog?.skills.orEmpty())
+                            visibleSkills.forEach { skill ->
+                                ComposerSkillItem(skill, skill.id in selectedSkills, canPrepare && (skill.id in selectedSkills || selectedSkills.size < 4)) {
+                                    selectedSkills = if (skill.id in selectedSkills) selectedSkills - skill.id else selectedSkills + skill.id
+                                    addMenu = false
+                                }
+                            }
+
                         }
                     }
                     IconButton(onClick = { permissionSheet = true }, enabled = !sending) {
                         Icon(permissionIcon(record.selectedPermission), stringResource(R.string.remote_permission_title),
-                            tint = if (record.selectedPermission == "full") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 Spacer(Modifier.weight(1f))
                 Box {
-                    TextButton(onClick = { modelMenu = true }, enabled = canPrepare, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                    TextButton(onClick = { modelMenu = true; if (catalog == null && !modelLoading) refreshModels() }, enabled = canPrepare, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurface), contentPadding = PaddingValues(horizontal = 6.dp)) {
                         Text((options.firstOrNull { it.model == model }?.name ?: model.ifBlank { stringResource(R.string.remote_model) }),
                             maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 100.dp), style = MaterialTheme.typography.labelMedium)
                         if (effort.isNotBlank()) Text(" " + effortLabel(effort), style = MaterialTheme.typography.labelMedium)
                     }
-                    DropdownMenu(modelMenu, { modelMenu = false }, shape = RoundedCornerShape(24.dp)) {
-                        DropdownMenuItem(text = { Text(stringResource(R.string.remote_model)) }, onClick = { modelMenu = false; showModels = true; if (catalog == null || catalog.error.isNotBlank()) refreshModels() })
-                        DropdownMenuItem(text = { Text(stringResource(R.string.remote_effort)) }, onClick = { modelMenu = false; showEfforts = true; if (catalog == null) refreshModels() })
-                    }
+                    ComposerModelMenu(modelMenu, { modelMenu = false }, chosen?.efforts.orEmpty(), effort,
+                        chosen?.name ?: model, { selectOptions(model, it) },
+                        models = options, selectedModel = model, onModel = { selected -> selectOptions(selected, options.firstOrNull { it.model == selected }?.default_effort.orEmpty()) },
+                        loading = modelLoading, failed = modelError || catalog?.error?.isNotBlank() == true, onRefresh = ::refreshModels)
                 }
                 if (!running && !preparing && text.isBlank() && files.isEmpty()) VoiceInputButton(enabled = !sending, onStage = { voiceStage = it }, onListening = { listening = it; if (it) voiceError = null }, onError = { voiceError = it }, onResult = { recognized ->
                     val draft = listOf(text.trimEnd(), recognized.trim()).filter { it.isNotBlank() }.joinToString(" ")
@@ -396,14 +439,15 @@ internal fun RemoteComposer(id: String, record: TaskInboxRecord, onFork: () -> U
     if (permissionSheet) RemotePermissionSheet(record.selectedPermission, canPrepare, { selected ->
         scope.launch { withContext(Dispatchers.IO) { TaskInbox(context).setPermission(id, selected) }; permissionSheet = false }
     }) { permissionSheet = false }
-    if (skillsSheet) RemoteSkillsSheet(record, selectedSkills, canPrepare, { selectedSkills = it }, ::refreshSkills) { skillsSheet = false }
-    if (showModels) RemoteModelPicker(options, model, modelLoading,
-        modelError || modelExpired && catalog?.request_id != record.modelRequest?.id || catalog?.error?.isNotBlank() == true,
-        ::refreshModels, { selected -> selectOptions(selected, options.firstOrNull { it.model == selected }?.default_effort.orEmpty()); showModels = false }, { showModels = false })
-    if (showEfforts) RemoteEffortPicker(chosen?.efforts.orEmpty(), effort,
-        { selected -> selectOptions(model, selected); showEfforts = false }, { showEfforts = false })
-    if (showMode) RemoteModePicker(catalog?.modes.orEmpty(), mode, modelLoading, ::refreshModels, { selected ->
-        mode = selected; showMode = false
-        scope.launch { withContext(Dispatchers.IO) { TaskInbox(context).setOptions(id, model, effort, selected) } }
-    }, { showMode = false })
+    if (skillsSheet) ComposerPluginManager(skillCatalog?.skills.orEmpty(),
+        visiblePluginIds ?: ComposerCatalog.skills(skillCatalog?.skills.orEmpty()).map { it.id }.toSet(),
+        loading = record.skillsRequest != null && skillCatalog?.request_id != record.skillsRequest.id,
+        failed = skillCatalog?.error?.isNotBlank() == true, onChange = { ids ->
+            if (pluginPreferencesLoaded) {
+                visiblePluginIds = ids
+                pluginStore.save(record.endpointHash, pluginHost, ids)
+            }
+        }, onRefresh = ::refreshSkills, onDismiss = { skillsSheet = false })
+
+
 }

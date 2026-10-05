@@ -6,67 +6,26 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
+// Native fonts retain Chinese coverage and follow the user's font scale.
+private fun type(size: Int, height: Int, weight: FontWeight = FontWeight.Normal) = TextStyle(
+    fontFamily = FontFamily.Default, fontWeight = weight, fontSize = size.sp,
+    lineHeight = height.sp, letterSpacing = 0.sp
+)
+
 val Typography = Typography(
-    displayLarge = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Bold,
-        fontSize = 54.sp,
-        lineHeight = 62.sp,
-        letterSpacing = (-0.5).sp
-    ),
-    displayMedium = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Bold,
-        fontSize = 42.sp,
-        lineHeight = 50.sp,
-        letterSpacing = (-0.25).sp
-    ),
-    headlineLarge = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Bold,
-        fontSize = 28.sp,
-        lineHeight = 36.sp
-    ),
-    headlineMedium = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 22.sp,
-        lineHeight = 28.sp
-    ),
-    titleLarge = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 18.sp,
-        lineHeight = 24.sp
-    ),
-    titleMedium = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Medium,
-        fontSize = 15.sp,
-        lineHeight = 20.sp
-    ),
-    bodyLarge = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Normal,
-        fontSize = 15.sp,
-        lineHeight = 22.sp
-    ),
-    bodyMedium = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Normal,
-        fontSize = 13.sp,
-        lineHeight = 18.sp
-    ),
-    labelLarge = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Medium,
-        fontSize = 13.sp,
-        lineHeight = 18.sp
-    ),
-    labelSmall = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Medium,
-        fontSize = 11.sp,
-        lineHeight = 14.sp
-    )
+    displayLarge = type(48, 56, FontWeight.SemiBold),
+    displayMedium = type(40, 48, FontWeight.SemiBold),
+    displaySmall = type(32, 40, FontWeight.SemiBold),
+    headlineLarge = type(28, 36, FontWeight.SemiBold),
+    headlineMedium = type(24, 32, FontWeight.SemiBold),
+    headlineSmall = type(22, 28, FontWeight.SemiBold),
+    titleLarge = type(20, 28, FontWeight.SemiBold),
+    titleMedium = type(16, 24, FontWeight.Medium),
+    titleSmall = type(14, 20, FontWeight.Medium),
+    bodyLarge = type(16, 24),
+    bodyMedium = type(14, 20),
+    bodySmall = type(12, 18),
+    labelLarge = type(14, 20, FontWeight.Medium),
+    labelMedium = type(12, 18, FontWeight.Medium),
+    labelSmall = type(12, 16, FontWeight.Medium)
 )

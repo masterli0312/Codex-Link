@@ -19,11 +19,19 @@ class DraftInteractionTest {
         assertTrue(FollowUpState.visible(RemoteConversationState(command, event("failed").copy(error = "STEER_REJECTED"))))
         assertTrue(FollowUpState.visible(RemoteConversationState(command, event("running").copy(attachment_pending = true))))
     }
+    @Test fun anUnconfirmedRequestIsRecoverableWithoutLockingComposerOperations() {
+        val state = RemoteConversationState(command.copy(action = "steer"), event("unknown").copy(error = "REQUEST_NOT_FOUND"))
+        assertFalse(FollowUpState.pending(state))
+        assertTrue(FollowUpState.visible(state))
+        assertTrue(FollowUpState.recoverable(state))
+    }
     @Test fun aSelectionAddsSeveralPhotosWithoutRemovingOrDuplicatingPreviousOnes() {
         assertEquals(listOf("a", "b", "c"), SelectedAttachmentRules.merge(listOf("a"), listOf("a", "b", "c")) { it })
         assertEquals(listOf("a", "b"), SelectedAttachmentRules.merge(emptyList<String>(), listOf("a", "b")) { it })
         val before = listOf("a", "b")
-        assertThrows(IllegalArgumentException::class.java) { SelectedAttachmentRules.merge(before, listOf("c", "d")) { it } }
+        assertEquals(listOf("a", "b", "c", "d"), SelectedAttachmentRules.merge(before, listOf("c", "d")) { it })
+        assertEquals(10, SelectedAttachmentRules.merge(emptyList<Int>(), (1..10).toList()) { it }.size)
+        assertThrows(IllegalArgumentException::class.java) { SelectedAttachmentRules.merge((1..10).toList(), listOf(11)) { it } }
         assertEquals(listOf("a", "b"), before)
     }
     private fun watched(): TaskInboxRecord {
@@ -36,11 +44,21 @@ class DraftInteractionTest {
         val record = watched()
         assertTrue(RemoteComposerRules.followUp(record))
         assertTrue(RemoteFollowUpRules.desktop(record))
+        assertTrue(RemoteComposerRules.immediateFollowUp(record, "queue"))
         val c = RemoteProtocol.followUp(requireNotNull(RemoteFollowUpRules.source(record)), "steer", "now")
         assertEquals(request, c.target_id)
         assertEquals("current-desktop-turn", c.expected_turn_id)
         assertEquals("steer", c.action)
-        assertFalse(RemoteComposerRules.canSend(record, true, false))
+        assertFalse("A mutation must not inherit the read-only watch flag", c.watch)
+        assertFalse("Status must remain valid when recovering a desktop steer", RemoteProtocol.control(c,"status").watch)
+        assertTrue(RemoteComposerRules.canSend(record, true, false))
+        assertFalse(RemoteComposerRules.canSend(record, true, true))
+    }
+    @Test fun explicitSteeringDoesNotBecomeADeferredMessageOnPhoneTurns() {
+        val phone = watched().copy(remoteState = RemoteConversationState(command.copy(action = "send"), event("running").copy(turn_id = "current-desktop-turn")))
+        assertFalse(RemoteFollowUpRules.desktop(phone))
+        assertTrue(RemoteComposerRules.immediateFollowUp(phone, "steer"))
+        assertFalse(RemoteComposerRules.immediateFollowUp(phone, "queue"))
     }
     @Test fun disconnectedCompletedOrOtherComputerWatchesCannotSteer() {
         val record = watched()

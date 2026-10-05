@@ -67,7 +67,7 @@ class SignedOutNotificationManager(private val context: Context) {
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .addAction(
-                R.drawable.ic_notification,
+                R.drawable.ic_notification_brand,
                 localizedContext.getString(R.string.action_sign_in),
                 pendingIntent
             )

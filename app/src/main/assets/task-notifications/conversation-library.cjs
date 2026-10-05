@@ -27,13 +27,14 @@ async function historyPage(client,id,cursor=''){
  // conversation; tool/reasoning items are projected separately and never become chat text.
  const result=await client.call('thread/turns/list',{threadId:id,limit:4,sortDirection:'desc',itemsView:'full',...(cursor?{cursor}:{})});
  const turns=(result.data||[]).slice().reverse();
+ if(turns.some(t=>t.itemsView==='notLoaded'||!Array.isArray(t.items)))throw Error('HISTORY_NOT_LOADED');
  const projection=snapshot({id,turns},'');
  return {messages:projection.messages,activities:projection.activities,next_cursor:typeof result.nextCursor==='string'?result.nextCursor:'',
    truncated:projection.truncated,turns};
 }
 async function activityPage(client,id,cursor=''){
  const result=await client.call('thread/items/list',{threadId:id,limit:12,sortDirection:'desc',...(cursor?{cursor}:{})});
- const activities=activity.mergeActivities([],(result.data||[]).slice().reverse().map(e=>activity.projectItem(e.turnId,e.item)).filter(Boolean));
+ const activities=activity.mergeActivities([],(result.data||[]).slice().reverse().map(e=>activity.projectItem(e.turnId,e.item,-1,id)).filter(Boolean));
  return {activities,next_cursor:typeof result.nextCursor==='string'?result.nextCursor:''};
 }
 function summaries(rows){return rows.map(t=>{
@@ -47,19 +48,23 @@ function snapshot(thread,host){
    let role,text;
    if(item.type==='userMessage'){role='user';text=(item.content||[]).filter(c=>c.type==='text'&&typeof c.text==='string').map(c=>c.text).join('\n');}
    else if(item.type==='agentMessage'){role='assistant';text=item.text;}
-   else if(['imageGeneration','imageView'].includes(item.type)){role='assistant';text='';}
-   const pictures=images.projectImages(thread.id,item,thread.cwd);
+   else if(item.type==='imageGeneration'){role='assistant';text='';}
+   const pictures=item.type==='imageView'?[]:images.projectImages(thread.id,item,thread.cwd);
    if((typeof text!=='string'||!text.trim())&&!pictures.length)continue;
    const limited=bounded(text,16384);truncated ||= limited!==text;
-   messages.push({role,text:limited,...(pictures.length?{images:pictures}:{}),...(typeof item.phase==='string'?{phase:item.phase}:{}),...(item.id?{id:turn.id+':'+item.id,position}:{})});if(messages.length>60){messages.shift();truncated=true;}
+   const files=require('./conversation-files.cjs').projectFiles(thread.id,item,thread.cwd);
+   messages.push({role,text:limited,...(files.length?{files}:{}),...(pictures.length?{images:pictures}:{}),...(typeof item.phase==='string'?{phase:item.phase}:{}),...(item.id?{id:turn.id+':'+item.id,position}:{})});if(messages.length>60){messages.shift();truncated=true;}
  }
  const turns=thread.turns||[],last=turns.at(-1),completed=last&&['completed','interrupted','failed'].includes(last.status);
  const reply=[...messages].reverse().find(m=>m.role==='assistant')?.text||'';
- const result={conversation_id:hash(thread.id),title:bounded(thread.name||thread.title||thread.preview,240),reply,messages,truncated,activities:activity.projectTurns(turns),
+ const result={conversation_id:hash(thread.id),title:bounded(thread.name||thread.title||thread.preview,240),reply,messages,truncated,activities:activity.projectTurns(turns,thread.id,thread.cwd),
    completed_at:new Date(Number(thread.updatedAt||thread.createdAt||0)*1000).toISOString()};
  result.running=last?.status==='inProgress';
  const durations=Object.fromEntries(turns.map(t=>[t.id,activity.turnDuration(t)]).filter(([id,d])=>id&&d!==null).slice(-40));
  if(Object.keys(durations).length)result.turn_durations=durations;
+ const starts=Object.fromEntries(turns.filter(t=>t.id&&Number.isSafeInteger(t.startedAt)&&t.startedAt>0)
+   .slice(-40).map(t=>[t.id,t.startedAt<1e11?t.startedAt*1000:t.startedAt]));
+ if(Object.keys(starts).length)result.turn_started_at=starts;
  if((completed||result.running)&&last?.id)result.thread_ref={host_id:host,thread_id:thread.id,baseline_turn:last.id};
  if(completed)result.remote_ref=result.thread_ref;
  while(Buffer.byteLength(JSON.stringify(result))>160000&&result.messages.length){result.messages.shift();result.truncated=true;}
@@ -82,20 +87,41 @@ async function creationProject(client,id,directory){
 async function readSnapshot(client,id,host,readLocal,metadata){
  const meta=metadata||(await client.call('thread/read',{threadId:id,includeTurns:false})).thread;
  if(meta?.id!==id)throw Error('MISSING_THREAD');
- let result;
+ let result,latestNative;
  try{
    const page=await historyPage(client,id);
-   result=snapshot({...meta,turns:page.turns},host);result.history_cursor=page.next_cursor;
+   if(page.turns.length){
+     result=snapshot({...meta,turns:page.turns},host);result.history_cursor=page.next_cursor;
+     latestNative=page.turns.at(-1);
+   }
  }catch{}
  if(!result)try{result=readLocal?.(id);}catch{}
- if(!result)result=snapshot((await client.call('thread/read',{threadId:id,includeTurns:true})).thread,host);
+ if(!result){
+   const full=(await client.call('thread/read',{threadId:id,includeTurns:true})).thread;
+   if(full?.id!==id)throw Error('MISSING_THREAD');
+   result=snapshot(full,host);latestNative=full.turns?.at(-1);
+ }
  result.title=bounded(meta.name||meta.title||meta.preview||result.title,240);
  if(Number(meta.updatedAt)>0)result.completed_at=new Date(Number(meta.updatedAt)*1000).toISOString();
- result.running=meta.status?.type==='active'||result.running===true;
+ // The full turn read follows metadata. A loaded thread can still be marked
+ // active after its latest turn completed; that flag must not prolong the reply.
+ const knownLatest=latestNative&&['inProgress','completed','interrupted','failed'].includes(latestNative.status);
+ result.running=knownLatest?latestNative.status==='inProgress':meta.status?.type==='active'||result.running===true;
  if(result.running)delete result.remote_ref;
  result.reply=bounded(result.reply,16384);
  while(Buffer.byteLength(JSON.stringify(result))>160000&&result.messages.length){result.messages.shift();result.truncated=true;}
  return result;
+}
+async function listedInArchiveState(client,id,archived,meta){
+ let cursor;const seen=new Set();
+ for(let page=0;page<20;page++){
+  const result=await client.call('thread/list',{limit:100,archived,modelProviders:[],sourceKinds,
+   ...(typeof meta.cwd==='string'&&meta.cwd?{cwd:meta.cwd}:{}),
+   ...(typeof meta.name==='string'&&meta.name?{searchTerm:meta.name}:{}),...(cursor?{cursor}:{})});
+  if((result.data||[]).some(t=>t.id===id))return true;
+  cursor=result.nextCursor;if(typeof cursor!=='string'||!cursor||seen.has(cursor))return false;seen.add(cursor);
+ }
+ return false;
 }
 async function manageThread(client,action,id,name=''){
  if(!['rename','archive','unarchive'].includes(action)||!UUID.test(id))throw Error('INVALID_MANAGEMENT');
@@ -104,8 +130,20 @@ async function manageThread(client,action,id,name=''){
  const meta=(await client.call('thread/read',{threadId:id,includeTurns:false})).thread;
  if(meta?.id!==id)throw Error('MISSING_THREAD');
  if(meta.status?.type==='active')throw Error('BUSY');
- await client.call(action==='rename'?'thread/name/set':action==='archive'?'thread/archive':'thread/unarchive',
-   {threadId:id,...(action==='rename'?{name:trimmed}:{})});
+ try{
+  await client.call(action==='rename'?'thread/name/set':action==='archive'?'thread/archive':'thread/unarchive',
+    {threadId:id,...(action==='rename'?{name:trimmed}:{})});
+ }catch(e){
+  // A previous successful archive moves the rollout; repeating it raises the same
+  // native error as an empty draft. Confirm the exact ID in the official target list.
+  const absent=e.rpcCode===-32600&&(
+   action==='archive'&&e.rpcMessage===`no rollout found for thread id ${id}`||
+   action==='unarchive'&&e.rpcMessage===`no archived rollout found for thread id ${id}`);
+  if(absent){
+   let confirmed=false;try{confirmed=await listedInArchiveState(client,id,action==='archive',meta);}catch{}
+   if(!confirmed)throw Error(action==='archive'?'NO_ARCHIVABLE_RECORD':'ARCHIVE_RECORD_MISSING');
+  }else throw e;
+ }
  return {managed_thread_id:id,managed_action:action,managed_name:action==='rename'?trimmed:''};
 }
 async function forkThread(client,id,turnId,host,onCreated=()=>{}){

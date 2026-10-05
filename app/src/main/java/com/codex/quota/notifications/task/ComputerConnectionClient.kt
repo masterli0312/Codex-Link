@@ -22,7 +22,7 @@ import android.content.Context
 /** A presence reply proves computer reachability, never Provider connectivity or quota. */
 class ComputerConnectionClient(context: Context) {
     private val store = ComputerConnectionStore(context)
-    private val http = OkHttpClient.Builder().addInterceptor(RelayRouting.interceptor(context.applicationContext)).connectTimeout(8, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
+    private val http = OkHttpClient.Builder().connectionPool(RelayConnectionPool.pool).addInterceptor(RelayRouting.interceptor(context.applicationContext)).connectTimeout(8, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(25, TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build()
     suspend fun ensure(connection: ComputerConnection) {
         if (!connection.recentlyReachable() && !probe(connection, force = false)) throw java.io.IOException("COMPUTER_UNREACHABLE")

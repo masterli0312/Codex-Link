@@ -186,7 +186,7 @@ async function main(argv = process.argv.slice(2), directory = __dirname, publish
   const configPath = process.env.CODEX_USAGE_NOTIFY_CONFIG || path.join(directory, 'connection.json');
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8').replace(/^\uFEFF/, ''));
   const raw = argv[argv.length - 1];
-  const flushOnly = argv[0] === '--flush';
+  const flushOnly = ['--flush','--drain'].includes(argv[0]);
   const test = argv[0] === '--test';
   if (!validEndpoint(config.endpoint)) throw new Error('Invalid notification endpoint');
   const metadata = test ? {
@@ -207,7 +207,7 @@ async function main(argv = process.argv.slice(2), directory = __dirname, publish
   let failed = false;
   try {
     // A scan error must not prevent already queued notifications from being delivered.
-    if (flushOnly) {
+    if (argv[0] === '--flush') {
       try { scanCompletions(config, directory, outbox, delivered); }
       catch { writeJson(path.join(directory, 'status.json'), { ...readJson(path.join(directory, 'status.json'), {}), scanStatus: 'retry_needed' }); }
     }
@@ -232,7 +232,11 @@ async function main(argv = process.argv.slice(2), directory = __dirname, publish
   if (failed && test) process.exitCode = 1;
 }
 
-module.exports = { completionMetadata, validEndpoint, preserveOriginal, forwardOriginal, publish, main };
+function enqueueCompletion(config,directory,payload,file,end){
+  const outbox=path.join(directory,'outbox');fs.mkdirSync(outbox,{recursive:true});
+  enqueue(outbox,enrichCompletion(completionMetadata(payload),config,payload,file,end),readJson(path.join(directory,'delivered.json'),{}));
+}
+module.exports = { completionMetadata, validEndpoint, preserveOriginal, forwardOriginal, publish, main, enqueueCompletion };
 if (require.main === module) main().catch(() => {
   // No raw payload/config/error output: retryable messages stay in the outbox.
   if (process.argv.includes('--test')) process.exitCode = 1;

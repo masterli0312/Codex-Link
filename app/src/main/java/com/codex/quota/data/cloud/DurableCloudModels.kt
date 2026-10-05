@@ -7,7 +7,7 @@ import kotlinx.serialization.json.*
 @Serializable data class CloudGithubRepository(val id: String, val name: String, val branch: String)
 @Serializable data class CloudPreparationChoice(val model: String = "", val effort: String = "")
 @Serializable data class CloudPreparationModel(val model: String, val name: String,
-    val efforts: List<String>, val defaultEffort: String, val isDefault: Boolean = false)
+    val efforts: List<String>, val defaultEffort: String, val isDefault: Boolean = false, val description: String = "")
 @Serializable data class CloudConfig(val id: String, val name: String, val versionId: String,
     val revision: Int, val latestReadyVersion: String = "", val status: String = "unknown",
     val repositories: List<CloudRepositoryRef> = emptyList(), val threadId: String = "",
@@ -33,7 +33,7 @@ object DurableCloudWire {
         val default = o.string("defaultReasoningEffort")
         if(!validId(model) || efforts.isEmpty() || default !in efforts) return@mapNotNull null
         CloudPreparationModel(model,o.string("displayName").ifBlank { model },efforts,default,
-            o["isDefault"]?.jsonPrimitive?.booleanOrNull == true)
+            o["isDefault"]?.jsonPrimitive?.booleanOrNull == true, o.string("description").take(400))
     }.distinctBy { it.model }
     fun validChoice(choice: CloudPreparationChoice, models: List<CloudPreparationModel>) =
         models.any { it.model == choice.model && choice.effort in it.efforts }
@@ -68,7 +68,7 @@ object DurableCloudWire {
         val messages = mutableListOf<CloudMessage>()
         val activities = mutableListOf<com.codex.quota.notifications.task.RemoteActivity>()
         val rows = turns.array("data").reversed()
-        for (row in rows) {
+        for ((turnIndex, row) in rows.withIndex()) {
             val turn = row.jsonObject
             require(turn.string("itemsView") != "notLoaded")
             for ((position,item) in turn.array("items").withIndex()) {
@@ -88,10 +88,19 @@ object DurableCloudWire {
         val status = when(latest?.string("status")) {
             "inProgress" -> "running"; "failed", "interrupted" -> "failed"; "completed" -> "completed"; else -> task(thread).status
         }
+        val tokenUsage = thread["tokenUsage"] as? JsonObject
+        val contextLimit = (tokenUsage?.get("modelContextWindow") as? JsonPrimitive)?.longOrNull?.takeIf { it > 0 }
+        // Lifetime totals are not the current context, especially after compaction.
+        val contextUsed = ((tokenUsage?.get("last") as? JsonObject)?.get("totalTokens") as? JsonPrimitive)
+            ?.longOrNull?.takeIf { contextLimit != null && it in 0..contextLimit }
         return CloudDetails(task(thread).copy(status = status), messages, historyCursor = turns.string("nextCursor"),
             activeTurnId = if(status == "running") latest?.string("id").orEmpty() else "",latestTurnId = latest?.string("id").orEmpty(),
+            contextUsed = contextUsed, contextLimit = contextLimit,
             activities = com.codex.quota.notifications.task.RemoteActivityRules.merge(emptyList(),activities),
-            turns = rows.mapNotNull { row -> (row as? JsonObject)?.let { CloudTurnInfo(it.string("id"),it.string("status"),turnDuration(it)) } })
+            turns = rows.mapNotNull { row -> (row as? JsonObject)?.let { CloudTurnInfo(it.string("id"),it.string("status"),turnDuration(it), turnStart(it)) } })
+    }
+    fun turnStart(turn: JsonObject): Long? = (turn["startedAt"] as? JsonPrimitive)?.longOrNull?.takeIf { it > 0 }?.let {
+        if (it < 100_000_000_000L) it * 1000 else it
     }
     fun turnDuration(turn: JsonObject): Long? {
         (turn["durationMs"] as? JsonPrimitive)?.longOrNull?.takeIf { it >= 0 }?.let { return it }

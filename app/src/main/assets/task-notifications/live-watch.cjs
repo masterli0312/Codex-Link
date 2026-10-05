@@ -7,6 +7,7 @@ class LiveWatch {
   this.cwd=cwd;
   this.threadId=threadId;this.hostId=hostId;this.value=structuredClone(snapshot);this.version=0;
   this.turn=snapshot.thread_ref?.baseline_turn||snapshot.remote_ref?.baseline_turn||'';
+  this.startedAt=snapshot.turn_started_at?.[this.turn]||null;
   this.seenTurns=new Set([this.turn,...snapshot.messages.map(m=>m.id?.split(':')[0]).filter(Boolean)]);
   this.positions=new Map();this.nextPosition=0;
   for(const item of [...snapshot.messages,...(snapshot.activities||[])])if(item.id?.startsWith(this.turn+':')){
@@ -22,11 +23,20 @@ class LiveWatch {
    this.seenTurns.add(turn);if(this.seenTurns.size>128)this.seenTurns.delete(this.seenTurns.values().next().value);
    this.turn=turn;this.positions.clear();this.nextPosition=0;
    this.startedAt=Number.isSafeInteger(p.turn?.startedAt)?(p.turn.startedAt<1e11?p.turn.startedAt*1000:p.turn.startedAt):Date.now();
+   this.value.turn_started_at=Object.fromEntries(Object.entries({...this.value.turn_started_at,[turn]:this.startedAt}).slice(-40));
    this.value.running=true;delete this.value.remote_ref;
    this.value.thread_ref={host_id:this.hostId,thread_id:this.threadId,baseline_turn:turn};
+   // Native turn/started can be the only event carrying the desktop user input.
+   // Use the same bounded public projection and stable IDs as later item events.
+   for(const item of (Array.isArray(p.turn?.items)?p.turn.items:[]).slice(0,512))this.item(item);
   }else{
    if(!turn||turn!==this.turn||!this.value.running)return false;
-   if(method==='item/started'||method==='item/completed')this.item(p.item);
+   if(method==='item/started'||method==='item/completed')this.item(p.item && {...p.item,status:p.item.status||(method==='item/started'?'inProgress':'completed')});
+   else if(method==='thread/compacted'){
+    // Older native servers expose only this confirmed completion notification.
+    const compact=this.value.activities?.findLast(a=>a.turn_id===turn&&a.type==='compaction');
+    this.item({id:compact?compact.id.slice(turn.length+1):'context-compacted',type:'contextCompaction',status:'completed'});
+   }
    else if(method==='item/agentMessage/delta'){
     if(typeof p.itemId!=='string'||typeof p.delta!=='string')return false;
     const id=turn+':'+p.itemId,old=this.value.messages.find(m=>m.id===id);
@@ -58,17 +68,18 @@ class LiveWatch {
   const position=this.positions.get(id);
   const text=item.type==='agentMessage'?item.text:item.type==='userMessage'?
    (item.content||[]).filter(c=>c.type==='text'&&typeof c.text==='string').map(c=>c.text).join('\n'):
-   ['imageGeneration','imageView'].includes(item.type)?'':null;
-  const images=projectImages(this.threadId,item,this.cwd);
+   item.type==='imageGeneration'?'':null;
+  const images=item.type==='imageView'?[]:projectImages(this.threadId,item,this.cwd);
+  const files=require('./conversation-files.cjs').projectFiles(this.threadId,item,this.cwd);
   if(typeof text==='string'&&(text.trim()||images.length)){
    const previous=this.value.messages.find(m=>m.id===id);
    const phase=typeof item.phase==='string'?item.phase:previous?.phase;
-   const message={id,position,role:item.type==='userMessage'?'user':'assistant',text:limit(text,16384),...(phase?{phase}:{}),...(images.length?{images}:{})};
+   const message={id,position,role:item.type==='userMessage'?'user':'assistant',text:limit(text,16384),...(phase?{phase}:{}),...(images.length?{images}:{}),...(files.length?{files}:{})};
    this.value.truncated ||= message.text!==text;
    const n=this.value.messages.findIndex(m=>m.id===id);
    if(n>=0)this.value.messages[n]=message;else this.value.messages.push(message);
   }
-  const a=projectItem(this.turn,item,position);
+  const a=projectItem(this.turn,item,position,this.threadId,this.cwd);
   if(a)this.value.activities=mergeActivities(this.value.activities||[],[a]);
  }
 }
@@ -77,7 +88,8 @@ function liveTail(value){
  if(!turn)return value;
  // The initial/recovery snapshot contains history. Subsequent live snapshots
  // carry only this native turn; the phone merges previous stable IDs into history.
- return {...value,messages:value.messages.filter(m=>m.id?.startsWith(turn+':')),
+ const messages=value.messages.filter(m=>m.id?.startsWith(turn+':'));
+ return {...value,messages,reply:[...messages].reverse().find(m=>m.role==='assistant')?.text||'',
   activities:(value.activities||[]).filter(a=>a.turn_id===turn)};
 }
 function reconcileSnapshot(live,snapshot){
@@ -100,7 +112,7 @@ function reconcileSnapshot(live,snapshot){
   if(!a.id?.startsWith(turn+':')||!b.id?.startsWith(turn+':'))return Number(!!a.id?.startsWith(turn+':'))-Number(!!b.id?.startsWith(turn+':'));
   return (a.position??1e6)-(b.position??1e6);
  });
- const value={...snapshot,messages,turn_durations:Object.fromEntries(Object.entries({...live.value.turn_durations,...snapshot.turn_durations}).slice(-40)),activities:mergeActivities(live.value.activities,snapshot.activities)};
+ const value={...snapshot,messages,turn_started_at:Object.fromEntries(Object.entries({...live.value.turn_started_at,...snapshot.turn_started_at}).slice(-40)),turn_durations:Object.fromEntries(Object.entries({...live.value.turn_durations,...snapshot.turn_durations}).slice(-40)),activities:mergeActivities(live.value.activities,snapshot.activities)};
  if(!live.value.running&&snapshot.running){value.running=false;value.remote_ref=live.value.remote_ref;}
  value.reply=[...messages].reverse().find(m=>m.role==='assistant')?.text||'';
  while(value.messages.length>60||Buffer.byteLength(JSON.stringify(value))>160000){

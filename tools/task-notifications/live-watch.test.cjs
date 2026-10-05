@@ -5,6 +5,29 @@ const {snapshot}=require('../../app/src/main/assets/task-notifications/conversat
 const thread='11111111-2222-3333-4444-555555555555',host='host';
 function fixture(){return new LiveWatch(thread,host,snapshot({id:thread,updatedAt:1000,turns:[{id:'old',status:'completed',items:[{id:'old-a',type:'agentMessage',text:'old reply'}]}]},host));}
 const event=(extra={})=>({threadId:thread,turnId:'new',...extra});
+test('turn start publishes embedded desktop input immediately and later item events keep its stable identity',()=>{
+ const w=fixture(),input={id:'q',type:'userMessage',content:[{type:'text',text:'new desktop question'}]};
+ w.apply('turn/started',event({turn:{id:'new',items:[input,{id:'private',type:'reasoning',text:'SECRET'}]}}));
+ assert.deepEqual(liveTail(w.value).messages.map(m=>[m.id,m.text,m.position]),[['new:q','new desktop question',0]]);
+ w.apply('item/started',event({item:input}));w.apply('item/completed',event({item:input}));
+ w.apply('item/agentMessage/delta',event({itemId:'a',delta:'response'}));
+ assert.equal(w.value.messages.filter(m=>m.id==='new:q').length,1);
+ assert.equal(w.value.messages.at(-1).position,2);
+ assert.equal(JSON.stringify(w).includes('SECRET'),false);
+ assert.equal(w.apply('turn/started',event({turn:{id:'old',items:[{...input,id:'wrong'}]}})),false);
+ assert.equal(w.apply('turn/started',event({threadId:'other',turn:{id:'foreign',items:[input]}})),false);
+ assert.equal(w.value.messages.some(m=>m.id==='old:wrong'),false);
+});
+
+test('context compaction lifecycle is visible live and survives final history projection',()=>{
+ const w=fixture();w.apply('turn/started',event({turn:{id:'new'}}));
+ w.apply('item/started',event({item:{id:'compact',type:'contextCompaction'}}));
+ assert.equal(w.value.activities[0].type,'compaction');assert.equal(w.value.activities[0].status,'inProgress');
+ w.apply('item/completed',event({item:{id:'compact',type:'contextCompaction'}}));
+ assert.equal(w.value.activities[0].status,'completed');
+ w.apply('turn/completed',event({turn:{id:'new',status:'completed'}}));
+ assert.equal(w.value.activities[0].type,'compaction');
+});
 test('live desktop messages stream in native order and complete on the same thread',()=>{
  const w=fixture();w.apply('turn/started',event({turn:{id:'new',status:'inProgress'}}));
  assert.equal(w.value.remote_ref,undefined);assert.equal(w.value.running,true);
@@ -44,6 +67,8 @@ test('live projection stays bounded across large deltas and many messages',()=>{
 });
 test('live tail avoids retransmitting old messages while preserving native identity and recovery cursor',()=>{
  const w=fixture();w.value.history_cursor='older cursor';w.apply('turn/started',event({turn:{id:'new'}}));
+ assert.equal(liveTail(w.value).reply,''); // Previous reply must not force a new input into the attachment path.
+ assert.equal(w.value.reply,'old reply'); // The full recovery snapshot still owns the history.
  w.apply('item/agentMessage/delta',event({itemId:'a',delta:'new reply'}));
  const tail=liveTail(w.value);
  assert.deepEqual(tail.messages.map(m=>m.id),['new:a']);assert.equal(tail.thread_ref.baseline_turn,'new');
@@ -75,4 +100,17 @@ test('reconciliation accepts a missed new turn and rejects a known historical tu
  assert.equal(reconcileSnapshot(w,saved).thread_ref.baseline_turn,'missed');
  w.apply('turn/started',event({turn:{id:'new'}}));
  assert.equal(reconcileSnapshot(w,fixture().value),null);
+});
+
+test('viewed images are activities in both history and live stream, not assistant image messages',()=>{
+ const image={id:'view',type:'imageView',path:'C:/fixture/inspection.png'};
+ const native={id:thread,updatedAt:1000,turns:[{id:'new',status:'inProgress',items:[image,{id:'generated',type:'imageGeneration',status:'completed',savedPath:'C:/fixture/generated.png'},{id:'user',type:'userMessage',content:[{type:'localImage',path:'C:/fixture/input.png'}]}]}]};
+ const historic=snapshot(native,host);
+ assert.ok(!historic.messages.some(m=>m.id==='new:view'));
+ assert.equal(historic.activities[0].type,'imageView');assert.equal(historic.activities[0].images.length,1);
+ assert.ok(historic.messages.some(m=>m.id==='new:generated'&&m.images.length));
+ assert.ok(historic.messages.some(m=>m.role==='user'&&m.images.length));
+ const w=fixture();w.apply('turn/started',event({turn:{id:'new'}}));w.apply('item/completed',event({item:image}));
+ assert.ok(!w.value.messages.some(m=>m.id==='new:view'));
+ assert.equal(w.value.activities[0].images[0].id,historic.activities[0].images[0].id);
 });

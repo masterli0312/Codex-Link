@@ -19,15 +19,15 @@ function projectImages(thread,item,cwd=''){
  if(item.type==='userMessage')for(const c of item.content||[]){
   if(!['localImage','image'].includes(c?.type))continue;
   const value=register(thread,c.type==='localImage'?c.path:c.url||(c.fileId?'official-file:'+c.fileId:''));
-  if(value)images.push(value);if(images.length===3)break;
+  if(value)images.push(value);if(images.length===10)break;
  }
- if(item.type==='userMessage'&&images.length<3)for(const c of item.content||[]){
+ if(item.type==='userMessage'&&images.length<10)for(const c of item.content||[]){
   if(c?.type!=='text'||typeof c.text!=='string'||!c.text.trimStart().startsWith('# Files mentioned by the user:'))continue;
   const wrapper=c.text.split(/^## My request(?: for Codex)?:/m)[0];
   for(const match of wrapper.matchAll(/^## [^\r\n:]+:\s+([^\r\n]+)$/gm)){
    const source=match[1].trim();
    if(!/[/\\]codex-remote-attachments[/\\]/.test(source)||!(/\.(?:png|jpe?g|webp|gif)$/i.test(source)))continue;
-   const value=register(thread,source);if(value)images.push(value);if(images.length===3)break;
+   const value=register(thread,source);if(value)images.push(value);if(images.length===10)break;
   }
  }
  if(item.type==='imageGeneration'&&item.status==='completed'){
@@ -42,10 +42,10 @@ function projectImages(thread,item,cwd=''){
   // Markdown file links are restricted to the thread workspace (never arbitrary assistant paths).
   for(const match of item.text.matchAll(/!\[[^\]\n]*\]\((?:<([^>]+)>|([^\s)]+))(?:\s+"[^"\n]*")?\)/g)){
    const value=register(thread,match[1]||match[2],true,cwd);
-   if(value)images.push(value);if(images.length===3)break;
+   if(value)images.push(value);if(images.length===10)break;
   }
  }
- return [...new Map(images.map(i=>[i.id,i])).values()].slice(0,3);
+ return [...new Map(images.map(i=>[i.id,i])).values()].slice(0,10);
 }
 function mime(bytes){
  if(bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))return 'image/png';

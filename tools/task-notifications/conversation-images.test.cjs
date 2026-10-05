@@ -42,13 +42,16 @@ test('pure image messages survive native history and live projection without lea
  live.apply('item/started',{threadId:thread,turnId:'turn',item});
  assert.deepEqual(live.value.messages[0].images,initial.messages[0].images);
 });
-test('native generated images and view-image items retain bounded image references',()=>{
- const thread=crypto.randomUUID(),messages=snapshot({id:thread,turns:[{id:'t',items:[
+test('generated images remain messages while view-image references stay in the execution process',()=>{
+ const thread=crypto.randomUUID(),value=snapshot({id:thread,turns:[{id:'t',items:[
   {id:'g',type:'imageGeneration',status:'completed',result:png.toString('base64')},
   {id:'v',type:'imageView',path:'/workspace/fixture.png'},
-  {id:'pending',type:'imageGeneration',status:'inProgress',result:''}]}]},host).messages;
- assert.equal(messages.length,2);assert.ok(messages.every(m=>m.role==='assistant'&&m.images.length===1));
- assert.ok(!JSON.stringify(messages).includes('/workspace'));
+  {id:'pending',type:'imageGeneration',status:'inProgress',result:''}]}]},host);
+ assert.equal(value.messages.length,1);assert.equal(value.messages[0].id,'t:g');
+ assert.equal(value.messages[0].role,'assistant');assert.equal(value.messages[0].images.length,1);
+ const view=value.activities.find(item=>item.type==='imageView');
+ assert.ok(view);assert.equal(view.images.length,1);
+ assert.ok(!JSON.stringify(value).includes('/workspace'));
 });
 test('image source resolution is thread-bound, bounded and never executes/fetches URLs',async()=>{
  const thread=crypto.randomUUID(),ref=projectImages(thread,{type:'userMessage',content:[{type:'image',url:data}]}).at(0);

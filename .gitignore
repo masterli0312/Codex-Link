@@ -31,6 +31,7 @@ app/build/
 
 # Gradle files
 .gradle/
+.kotlin/
 build/
 
 # Signing files

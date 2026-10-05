@@ -5,7 +5,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.Alignment
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -26,16 +28,16 @@ internal fun RemoteSkillsSheet(record: TaskInboxRecord, selected: List<String>, 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.8f).dp).padding(bottom = 20.dp)) {
             Text(stringResource(R.string.remote_skills_title), Modifier.padding(horizontal = 24.dp, vertical = 12.dp), style = MaterialTheme.typography.titleLarge)
-            Text(stringResource(R.string.remote_skills_source), Modifier.padding(horizontal = 24.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
             if (result == null && !timedOut) LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 16.dp))
             if (timedOut && result == null || result?.error?.isNotBlank() == true) Text(stringResource(R.string.remote_skills_unavailable), Modifier.padding(24.dp), color = MaterialTheme.colorScheme.error)
             if (result != null && result.error.isBlank() && result.skills.isEmpty()) Text(stringResource(R.string.remote_skills_empty), Modifier.padding(24.dp))
             LazyColumn(Modifier.weight(1f, fill = false)) {
-                items(result?.skills.orEmpty().sortedWith(compareByDescending<com.codex.quota.notifications.task.RemoteSkill> { it.plugin }.thenBy { it.name }), key = { it.id }) { skill ->
+                items(com.codex.quota.notifications.task.ComposerCatalog.skills(result?.skills.orEmpty()), key = { it.id }) { skill ->
                     val allowed = enabled && (skill.id in selected || selected.size < 4)
                     fun toggle() { onSelect(if (skill.id in selected) selected - skill.id else selected + skill.id) }
-                    ListItem(headlineContent = { Text(skill.name) }, supportingContent = { Text(skill.description, maxLines = 2) },
-                        leadingContent = { Icon(Icons.Outlined.Extension, null) }, trailingContent = { Checkbox(skill.id in selected, onCheckedChange = { toggle() }, enabled = allowed) },
+                    ListItem(headlineContent = { Text(skillDisplayName(skill), maxLines = 1, overflow = TextOverflow.Ellipsis) }, supportingContent = { Text(skill.description, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                        trailingContent = { if (skill.id in selected) Icon(Icons.Outlined.Check, null, Modifier.size(22.dp)) },
                         modifier = Modifier.clickable(enabled = allowed) { toggle() }, colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent))
                 }
             }

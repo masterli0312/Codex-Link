@@ -15,6 +15,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -46,13 +47,13 @@ import java.time.ZoneId
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AccountDetailScreen(viewModel: AccountDetailViewModel, onNavigateBack: () -> Unit, onCreditHistory: () -> Unit, modifier: Modifier = Modifier) {
-    val loaded by viewModel.accountLoaded.collectAsState()
-    val data by viewModel.accountState.collectAsState()
-    val refreshing by viewModel.isRefreshing.collectAsState()
-    val deleted by viewModel.accountDeleted.collectAsState()
-    val resetting by viewModel.isResetting.collectAsState()
-    val resetOutcome by viewModel.resetOutcome.collectAsState()
-    val message by viewModel.uiMessage.collectAsState()
+    val loaded by viewModel.accountLoaded.collectAsStateWithLifecycle()
+    val data by viewModel.accountState.collectAsStateWithLifecycle()
+    val refreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+    val deleted by viewModel.accountDeleted.collectAsStateWithLifecycle()
+    val resetting by viewModel.isResetting.collectAsStateWithLifecycle()
+    val resetOutcome by viewModel.resetOutcome.collectAsStateWithLifecycle()
+    val message by viewModel.uiMessage.collectAsStateWithLifecycle()
     val snackbars = remember { SnackbarHostState() }
     LaunchedEffect(message) { message?.let { snackbars.showSnackbar(it); viewModel.clearUiMessage() } }
     var editNickname by remember { mutableStateOf(false) }
@@ -63,9 +64,9 @@ fun AccountDetailScreen(viewModel: AccountDetailViewModel, onNavigateBack: () ->
     LaunchedEffect(deleted) { if (deleted) onNavigateBack() }
     val account = data?.account
     val usage = data?.usage
-    val creditHistory by viewModel.creditHistory.collectAsState()
-    val preferences by viewModel.preferences.collectAsState()
-    val updatingActivation by viewModel.isUpdatingActivation.collectAsState()
+    val creditHistory by viewModel.creditHistory.collectAsStateWithLifecycle()
+    val preferences by viewModel.preferences.collectAsStateWithLifecycle()
+    val updatingActivation by viewModel.isUpdatingActivation.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val now = rememberQuotaClock()
     val zone = ZoneId.systemDefault()
@@ -76,13 +77,15 @@ fun AccountDetailScreen(viewModel: AccountDetailViewModel, onNavigateBack: () ->
         CenterAlignedTopAppBar(colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.background), title = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(account?.let { localizedAccountNickname(context, it) } ?: stringResource(R.string.account_details), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (account != null) Text(localizedShortPlanName(context, account.planType), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }, navigationIcon = { IconButton(onClick = onNavigateBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back)) } }, actions = {
             if (account != null) IconButton(onClick = { nickname = account.nickname; nicknameError = false; editNickname = true }) {
                 Icon(Icons.Outlined.Edit, stringResource(R.string.edit_account_nickname))
             }
-            IconButton(onClick = viewModel::refresh, enabled = !refreshing) { Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.refresh_usage_data)) }
+            IconButton(onClick = viewModel::refresh, enabled = !refreshing) {
+                if (refreshing) CircularProgressIndicator(Modifier.size(20.dp),strokeWidth = 2.dp)
+                else Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.refresh_usage_data))
+            }
         })
     }) { padding ->
         if (account == null) Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
@@ -93,7 +96,6 @@ fun AccountDetailScreen(viewModel: AccountDetailViewModel, onNavigateBack: () ->
             }
         }
         else LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            if (refreshing) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
             item {
                 Panel {
                     SectionTitle(stringResource(R.string.account_connection_status), Icons.Outlined.VerifiedUser)
@@ -147,8 +149,8 @@ fun AccountDetailScreen(viewModel: AccountDetailViewModel, onNavigateBack: () ->
                         if (resetting) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)) }
                         Text(stringResource(R.string.use_reset))
                     }
-                    OutlinedButton(onClick = { showDelete = true }, modifier = Modifier.weight(1f).heightIn(min = 52.dp), shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
+                    TextButton(onClick = { showDelete = true }, modifier = Modifier.weight(1f).heightIn(min = 52.dp), shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
                         Icon(Icons.Default.Delete, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(stringResource(R.string.remove_account))
                     }
                 }
@@ -212,7 +214,7 @@ fun AccountDetailScreen(viewModel: AccountDetailViewModel, onNavigateBack: () ->
 @Composable
 private fun Panel(content: @Composable ColumnScope.() -> Unit) {
     SectionSurface {
-        Column(Modifier.fillMaxWidth().padding(18.dp), content = content)
+        Column(Modifier.fillMaxWidth().padding(16.dp), content = content)
     }
 }
 

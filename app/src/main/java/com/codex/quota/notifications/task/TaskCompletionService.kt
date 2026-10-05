@@ -127,7 +127,7 @@ class TaskCompletionService : Service() {
 
     private fun connectionNotification(text: Int): Notification = NotificationCompat.Builder(this, CONNECTION_CHANNEL)
         .withAppIcon(this)
-        .setContentTitle(localizedContext.getString(R.string.task_notification_title))
+        .setContentTitle(localizedContext.getString(R.string.app_name))
         .setContentText(localizedContext.getString(text)).setOngoing(true).setSilent(true)
         .setContentIntent(pendingIntent()).build()
 
@@ -136,10 +136,15 @@ class TaskCompletionService : Service() {
         val settings = store.read()
         val key = if (settings.contentEnabled) computer.key.takeIf { it.isNotBlank() } else null
         val snapshot = if (key != null) event.encryptedContent?.let { TaskContentCipher.decode(it, key, event.deduplicationId) } else null
-        if (snapshot?.remote_ref != null && computer.hostId.isNotBlank() && snapshot.remote_ref.host_id != computer.hostId) return
+        val ref = snapshot?.thread_ref ?: snapshot?.remote_ref
+        if (ref != null && computer.hostId.isNotBlank() && ref.host_id != computer.hostId) return
         val inbox = TaskInbox(this)
+        val syncStore = ConversationSyncSelectionStore(this)
+        if (ref != null && event.status in setOf("turn_complete", "task_complete", "review_complete"))
+            syncStore.markActivity(computer, ref.thread_id, ref.baseline_turn, false, event.timeEpochMs, true)
+        val selected = snapshot?.let { ConversationSyncRules.caches(it, computer, syncStore.read(computer)) } == true
         var record: TaskInboxRecord? = null
-        if (snapshot != null) {
+        if (snapshot != null && selected) {
             val attachment = event.attachment?.takeIf { RelayRouting.attachmentUrl(this, endpoint, it.url) != null }
             val saved = TaskInboxRecord(inbox.recordId(endpoint, event.deduplicationId), event.timeEpochMs, event.deduplicationId,
                 TaskInbox.hash(endpoint), snapshot, attachment?.url, attachment?.expiresAt ?: 0)
@@ -154,6 +159,7 @@ class TaskCompletionService : Service() {
             if (full.remote_ref != null && computer.hostId.isNotBlank() && full.remote_ref.host_id != computer.hostId) return@launch
             val latest = store.read()
             if (latest.enabled && latest.contentEnabled && ComputerConnectionStore(this@TaskCompletionService).endpoint(TaskInbox.hash(endpoint))?.key == key && inbox.read(saved.id) != null) {
+                  if (ref == null || !syncStore.isSelected(computer, ref.thread_id)) return@launch
                 runCatching { inbox.replaceDownloaded(saved.copy(snapshot = full, hasFullSnapshot = true)) }
             }
         }
@@ -167,8 +173,7 @@ class TaskCompletionService : Service() {
             "permission_request", "question", "plan_ready" -> R.string.task_attention_input
             else -> R.string.task_turn_ended
         }
-        val time = DateFormat.getTimeInstance(DateFormat.SHORT, localizedContext.resources.configuration.locales[0]).format(Date(event.timeEpochMs))
-        val generic = localizedContext.getString(R.string.task_notification_body, localizedContext.getString(text), time)
+        val generic = localizedContext.getString(text)
         val notification = NotificationCompat.Builder(this, EVENT_CHANNEL)
             .withAppIcon(this)
             .setContentTitle(preview?.title?.takeIf { it.isNotBlank() } ?: localizedContext.getString(R.string.task_notification_title))
@@ -197,7 +202,7 @@ class TaskCompletionService : Service() {
         const val TASK_HISTORY_EXTRA = "show_task_history"
         private const val CONNECTION_CHANNEL = "channel_codex_task_connection"
         private const val EVENT_CHANNEL = "channel_codex_task_events"
-        private const val CONNECTION_ID = 5100
+        private const val CONNECTION_ID = 5102
         private const val EVENT_ID = 5101
         fun startIfEnabled(context: Context): Boolean {
             if (!TaskNotificationStore(context).read().enabled) return false

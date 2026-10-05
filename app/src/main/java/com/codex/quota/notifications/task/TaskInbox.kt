@@ -11,7 +11,11 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 @Serializable
-data class LocalQueuedReply(val id: String, val text: String, val attempted: Boolean = false)
+data class LocalQueuedAttachment(val uri: String, val name: String, val mime: String)
+
+@Serializable
+data class LocalQueuedReply(val id: String, val text: String, val attempted: Boolean = false,
+    val awaitingChoice: Boolean = false, val files: List<LocalQueuedAttachment> = emptyList())
 
 @Serializable
 data class TaskInboxRecord(
@@ -38,6 +42,7 @@ data class TaskInboxRecord(
     val historyCursor: String? = null,
     val historyLimited: Boolean = false,
     val archived: Boolean = false,
+    val archiveChangedAt: Long = 0,
     val threadCatalogArchived: Boolean = false,
     val threadCatalogSearch: String = "",
     val pinned: Boolean = false,
@@ -48,7 +53,8 @@ data class TaskInboxRecord(
     val selectedPermission: String = "default", val sessionRequest: RemoteCommand? = null, val sessionResult: RemoteEvent? = null,
     val skillsRequest: RemoteCommand? = null, val skillsResult: RemoteEvent? = null,
     val lastSessionResult: RemoteEvent? = null,
-    val localQueuedReplies: List<LocalQueuedReply> = emptyList()
+    val localQueuedReplies: List<LocalQueuedReply> = emptyList(),
+    val pendingSyncCreation: Boolean = false
 )
 
 /** Bounded, encrypted, backup-excluded cache. One record per event and pairing endpoint. */
@@ -119,11 +125,15 @@ class TaskInbox(context: Context) {
         val state = update(old)
         if (state == old) return@synchronized
         val event = state.event
+        var adoptedSnapshot = false
         var snapshot = if (event?.snapshot != null && !event.attachment_pending && (event.snapshot.conversation_id == record.snapshot.conversation_id ||
             state.command.action == "create" && event.snapshot.remote_ref?.host_id == state.command.host_id)) {
             val incoming = event!!.snapshot!!
             if (incoming.conversation_id != record.snapshot.conversation_id && state.command.action == "create" ||
-                !ConversationSnapshotRules.regresses(record, incoming)) incoming else record.snapshot
+                !ConversationSnapshotRules.regresses(record, incoming, nativeRewrite = true)) {
+                adoptedSnapshot = true
+                incoming
+            } else record.snapshot
         } else if (event != null && ConversationSnapshotRules.currentTask(record, state) && !ConversationSnapshotRules.hasNativeReply(record, state) && !event.attachment_pending && event.status in setOf("completed", "interrupted") && event.turn_id.isNotBlank() && old.event?.status !in setOf("completed", "interrupted") && state.command.action !in RemoteGoalRules.rootActions) {
             record.snapshot.copy(remote_ref = record.snapshot.remote_ref?.copy(baseline_turn = event.turn_id),
                 reply = event.reply, completed_at = "",
@@ -139,7 +149,20 @@ class TaskInbox(context: Context) {
             it.copy(model = record.selectedModel, effort = record.selectedEffort, mode = record.selectedMode)
         }
         // The canonical snapshot is stored once, not duplicated inside the transport state.
-        save(record.copy(snapshot = snapshot, hasFullSnapshot = record.hasFullSnapshot || event?.snapshot != null && !event.attachment_pending,
+        var pendingSyncCreation = record.pendingSyncCreation
+        if (pendingSyncCreation && adoptedSnapshot && state.command.action == "create") {
+            val ref = snapshot.thread_ref ?: snapshot.remote_ref
+            val computer = ComputerConnectionStore(appContext).find(record)
+            if (computer != null && ref?.host_id == computer.hostId && ConversationSyncRules.validId(ref.thread_id) &&
+                snapshot.conversation_id == hash(ref.thread_id)) {
+                ConversationSyncSelectionStore(appContext).add(computer, RemoteThreadSummary(ref.thread_id, snapshot.title,
+                    updated_at = runCatching { java.time.Instant.parse(snapshot.completed_at).toEpochMilli() }.getOrDefault(0), running = snapshot.running))
+                pendingSyncCreation = false
+            }
+        }
+        save(record.copy(snapshot = snapshot, hasFullSnapshot = record.hasFullSnapshot || adoptedSnapshot,
+            pendingSyncCreation = pendingSyncCreation,
+            contentValidatedAt = if (adoptedSnapshot) System.currentTimeMillis() else record.contentValidatedAt,
             activities = RemoteActivityRules.merge(record.activities, event?.activities.orEmpty() + snapshot.activities),
             remoteState = state.copy(event = event?.copy(snapshot = null))))
     }
@@ -150,8 +173,11 @@ class TaskInbox(context: Context) {
             root.command.host_id == command.host_id && root.command.conversation_id == command.conversation_id)
         val pending = record.followUps.filter { FollowUpState.pending(it) }
         require(pending.size < 8)
-        save(record.copy(followUps = (pending + record.followUps.filterNot { FollowUpState.pending(it) }.takeLast(7) +
-            RemoteConversationState(command)).takeLast(16)))
+        save(record.copy(followUps = (pending.filterNot { it.command.id == command.id } + record.followUps.filterNot { FollowUpState.pending(it) || it.command.id == command.id }.takeLast(7) +
+            RemoteConversationState(command)).takeLast(16),
+            localQueuedReplies = if (command.action == "steer") record.localQueuedReplies.map {
+                if (it.id == command.id) it.copy(attempted = true) else it
+            } else record.localQueuedReplies))
     }
     fun updateFollowUp(id: String, requestId: String, update: (RemoteConversationState) -> RemoteConversationState) = synchronized(lock) {
         val record = read(id) ?: return@synchronized
@@ -159,11 +185,12 @@ class TaskInbox(context: Context) {
         val accepted = followUps.any { it.command.id == requestId && it.event?.status == "steered" }
         save(record.copy(followUps = followUps,localQueuedReplies = if (accepted) record.localQueuedReplies.filterNot { it.id == requestId } else record.localQueuedReplies))
     }
-    fun queueLocalReply(id: String,text: String) = synchronized(lock) {
+    fun queueLocalReply(id: String,text: String, files: List<LocalQueuedAttachment> = emptyList(), awaitingChoice: Boolean = false) = synchronized(lock) {
         val record = requireNotNull(read(id))
         require(record.snapshot.running || ConversationIndex.hasPendingTurn(record))
         require(text.isNotBlank() && text.toByteArray().size <= 16384 && record.localQueuedReplies.size < 8)
-        save(record.copy(localQueuedReplies = record.localQueuedReplies + LocalQueuedReply(java.util.UUID.randomUUID().toString(),text)))
+        require(files.size <= SelectedAttachmentRules.MAX_FILES && files.all { it.uri.startsWith("content:") })
+        save(record.copy(localQueuedReplies = record.localQueuedReplies + LocalQueuedReply(java.util.UUID.randomUUID().toString(),text, awaitingChoice = awaitingChoice, files = files)))
     }
     fun cancelLocalReply(id: String,key: String) = synchronized(lock) {
         val record = requireNotNull(read(id))
@@ -171,10 +198,25 @@ class TaskInbox(context: Context) {
         require(record.followUps.none { it.command.id == key && FollowUpState.pending(it) })
         save(record.copy(localQueuedReplies = record.localQueuedReplies.filterNot { it.id == key }))
     }
+    fun markFollowUpUnconfirmed(id: String, key: String) = synchronized(lock) {
+        updateFollowUp(id,key) { state ->
+            if (!FollowUpState.pending(state)) state else state.copy(transport = "unconfirmed", event =
+                RemoteEvent(java.util.UUID.randomUUID().toString(),state.command.id,state.command.host_id,
+                    state.command.thread_id,state.command.conversation_id,"unknown",state.event?.seq ?: 0,
+                    System.currentTimeMillis(),error = "ACK_UNCONFIRMED"))
+        }
+    }
+    fun dismissUnconfirmedReply(id: String, key: String) = synchronized(lock) {
+        val record = requireNotNull(read(id))
+        val entry = requireNotNull(record.followUps.firstOrNull { it.command.id == key })
+        require(!FollowUpState.pending(entry) && FollowUpState.recoverable(entry))
+        save(record.copy(followUps = record.followUps.filterNot { it.command.id == key },
+            localQueuedReplies = record.localQueuedReplies.filterNot { it.id == key }))
+    }
     fun claimLocalReply(id: String): LocalQueuedReply? = synchronized(lock) {
         val record = read(id) ?: return@synchronized null
         if (record.snapshot.running || ConversationIndex.hasPendingTurn(record) || record.snapshot.remote_ref == null) return@synchronized null
-        val pending = record.localQueuedReplies.firstOrNull()?.takeIf { !it.attempted } ?: return@synchronized null
+        val pending = record.localQueuedReplies.firstOrNull { !it.awaitingChoice && !it.attempted } ?: return@synchronized null
         save(record.copy(localQueuedReplies = record.localQueuedReplies.map { if(it.id == pending.id) it.copy(attempted = true) else it }))
         pending
     }
@@ -276,14 +318,21 @@ class TaskInbox(context: Context) {
         val result = event.copy(snapshot = event.snapshot?.copy(messages = emptyList(), reply = ""), messages = emptyList())
         val success = event.error.isBlank() && !event.partial
         var updated = record.copy(libraryResult = result)
+        if (query.action == "read" && event.snapshot != null) {
+            val computer = ComputerConnectionStore(appContext).find(record)
+            if (computer == null || !ConversationSyncRules.caches(event.snapshot, computer, ConversationSyncSelectionStore(appContext).read(computer))) {
+                save(updated)
+                return@synchronized
+            }
+        }
         if (query.action == "read" && success && !event.attachment_pending && event.snapshot != null && !record.libraryAnchor) {
             val synced = record.copy(snapshot = event.snapshot, hasFullSnapshot = true)
             if (ConversationIndex.sameConversation(record, synced)) {
                 // One atomic encrypted write, not an intermediate record plus a
                 // second write of the same record. Preserve options and pending tasks.
-                val merged = ConversationIndex.mergeSynced(updated, synced)
-                save(if (ConversationSnapshotRules.regresses(record, event.snapshot, nativeRewrite = true)) merged
-                    else merged.copy(contentValidatedAt = System.currentTimeMillis()))
+                val merged = ConversationIndex.mergeSynced(updated, synced, validatedAt = System.currentTimeMillis())
+                ConversationSyncTrace.record(if (merged !== updated) "snapshot-adopted" else "snapshot-rejected", event.seq, context = appContext)
+                save(merged)
                 return@synchronized
             }
         }
@@ -303,9 +352,26 @@ class TaskInbox(context: Context) {
                 historyLimited = record.historyLimited || limited || event.history_truncated)
         }
         save(updated)
+        if (event.status == "threads" && success && !event.attachment_pending) {
+            ComputerConnectionStore(appContext).find(record)?.let {
+                ConversationSyncSelectionStore(appContext).catalog(it, query, event)
+            }
+            list().forEach { cached ->
+                val reconciled = ConversationIndex.applyCatalogArchive(cached, record.endpointHash, query, event)
+                if (reconciled != cached) save(reconciled)
+            }
+        }
         if (event.status == "managed" && success && event.managed_thread_id == query.read_thread_id && event.managed_action == query.action) {
+            val appliedAt = System.currentTimeMillis()
+            if (query.action == "rename") ComputerConnectionStore(appContext).find(record)?.let {
+                ConversationSyncSelectionStore(appContext).confirmName(it, query.read_thread_id, event.managed_name, appliedAt)
+            }
+            if (query.action in setOf("archive", "unarchive")) ComputerConnectionStore(appContext).find(record)?.let {
+                ConversationSyncSelectionStore(appContext).confirmArchive(it, query.read_thread_id, query.action == "archive", appliedAt)
+            }
             list().filter { it.endpointHash == record.endpointHash }.forEach { cached ->
-                save(ConversationIndex.applyManagement(cached, record.endpointHash, query, event))
+                val managed = ConversationIndex.applyManagement(cached, record.endpointHash, query, event, appliedAt)
+                if (managed != cached) save(managed)
             }
         }
         event.snapshot?.takeIf { success && !event.attachment_pending }?.let { snapshot ->
@@ -319,10 +385,8 @@ class TaskInbox(context: Context) {
             // every other history file for each streaming frame.
             val existing = if (!updated.libraryAnchor && ConversationIndex.sameConversation(updated, synced)) updated
                 else ConversationIndex.latestForDisplay(list()).firstOrNull { ConversationIndex.sameConversation(it, synced) }
-            val merged = ConversationIndex.mergeSynced(existing, synced)
-            save(merged.copy(archived = query.archived, contentValidatedAt =
-                if (existing == null || !ConversationSnapshotRules.regresses(existing, synced.snapshot, nativeRewrite = true)) System.currentTimeMillis()
-                else merged.contentValidatedAt))
+            val merged = ConversationIndex.mergeSynced(existing, synced, validatedAt = System.currentTimeMillis())
+            save(merged.copy(archived = existing?.archived ?: query.archived))
         }
     }
     fun list(): List<TaskInboxRecord> = synchronized(lock) {

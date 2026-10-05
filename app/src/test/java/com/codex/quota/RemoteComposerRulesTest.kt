@@ -10,12 +10,12 @@ class RemoteComposerRulesTest {
     private val idle = TaskInboxRecord("record", 1, "event", "pair",
         TaskConversationSnapshot(conversation_id = "conversation", remote_ref = ref))
 
-    @Test fun preparedFilesAndSkillsCannotBeSilentlyDroppedByTextOnlyFollowUps() {
+    @Test fun activeFilesUseSteeringWhileSkillsStillRequireANewTurn() {
         val active = idle.copy(snapshot = idle.snapshot.copy(running = true, remote_ref = null),
             remoteState = RemoteConversationState(command, RemoteEvent("event", "request", "host", "thread",
                 "conversation", "running", 1, 2000, turn_id = "active")))
         assertTrue(RemoteComposerRules.canSend(active, false, false))
-        assertFalse(RemoteComposerRules.canSend(active, true, false))
+        assertTrue(RemoteComposerRules.canSend(active, true, false))
         assertFalse(RemoteComposerRules.canSend(active, false, true))
         val completed = idle.copy(remoteState = active.remoteState?.copy(event = active.remoteState.event?.copy(status = "completed")))
         assertTrue(RemoteComposerRules.canSend(completed, true, true))

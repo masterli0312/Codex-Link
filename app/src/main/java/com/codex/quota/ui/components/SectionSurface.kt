@@ -12,22 +12,23 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.codex.quota.ui.theme.UiMetrics
 
 /** Shared visual treatment only; each screen retains its own state and interactions. */
 @Composable
 internal fun SectionSurface(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp),
+    Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(UiMetrics.CardRadius),
         color = MaterialTheme.colorScheme.surfaceContainerLowest,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))) {
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))) {
         Column(content = content)
     }
 }
 
 @Composable
 internal fun SectionIcon(icon: ImageVector, modifier: Modifier = Modifier) {
-    Surface(modifier.size(40.dp), shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
-        Box(contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(22.dp)) }
+    Surface(modifier.size(36.dp), shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow, contentColor = MaterialTheme.colorScheme.onSurfaceVariant) {
+        Box(contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(20.dp)) }
     }
 }
 
