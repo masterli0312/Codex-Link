@@ -65,7 +65,11 @@ class RemoteConversationTest {
         assertFalse(RemoteInputRules.accepts(input, answers + ("choice" to listOf("Three"))))
         assertFalse(RemoteInputRules.accepts(input, answers + ("choice" to listOf("One", "Two"))))
         assertFalse(RemoteInputRules.accepts(input, answers + ("detail" to listOf("文".repeat(2000)))))
-        assertThrows(IllegalArgumentException::class.java) { RemoteProtocol.answerInput(state.copy(event = event.copy(attachment_pending = true)), input.id, answers) }
+        val inline = event.copy(partial = true, attachment_pending = true)
+        val decoded = RemoteProtocol.event(RemoteProtocol.wire("event", inline.id, RemoteProtocol.json.encodeToString(inline), key), key)!!
+        assertTrue(RemoteInputRules.ready(decoded))
+        assertEquals(input.id, RemoteProtocol.answerInput(state.copy(event = decoded), input.id, answers).input_id)
+        assertThrows(IllegalArgumentException::class.java) { RemoteProtocol.answerInput(state.copy(event = inline.copy(user_input = null)), input.id, answers) }
         assertThrows(IllegalArgumentException::class.java) { RemoteProtocol.answerInput(state.copy(event = event.copy(host_id = "other-host")), input.id, answers) }
         assertThrows(IllegalArgumentException::class.java) { RemoteProtocol.answerInput(state.copy(event = event.copy(status = "completed")), input.id, answers) }
     }
@@ -77,6 +81,7 @@ class RemoteConversationTest {
         fun decode(e: RemoteEvent) = RemoteProtocol.event(RemoteProtocol.wire("event", e.id, RemoteProtocol.json.encodeToString(e), key), key)
         assertNull(decode(event))
         assertNotNull(decode(event.copy(attachment_pending = true)))
+        assertFalse(RemoteInputRules.ready(event.copy(attachment_pending = true)))
         val input = RemoteInputRequest("33333333-2222-3333-4444-555555555555", "different-turn", true,
             listOf(RemoteInputQuestion("q", "Q", "Question?")))
         assertNull(decode(event.copy(user_input = input)))
@@ -94,7 +99,8 @@ class RemoteConversationTest {
         assertFalse(RemoteAttention.matches(state.copy(event = event.copy(status = "running", user_input = null)), event))
         assertFalse(RemoteAttention.matches(state.copy(event = event.copy(user_input = input.copy(id = "44444444-2222-3333-4444-555555555555"))), event))
         assertFalse(RemoteAttention.matches(state, event.copy(host_id = "other-host")))
-        assertFalse(RemoteAttention.matches(state, event.copy(attachment_pending = true)))
+        assertTrue(RemoteAttention.matches(state, event.copy(attachment_pending = true)))
+        assertFalse(RemoteAttention.matches(state, event.copy(attachment_pending = true, user_input = null)))
     }
 
     @Test fun hostTopicMatchesTheComputerAndStaysOnPairedHttpsOrigin() {

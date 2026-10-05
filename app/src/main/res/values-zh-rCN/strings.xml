@@ -871,4 +871,11 @@
     <string name="conversation_connection_manage">连接管理</string>
     <string name="remote_delivery_pending">正在发送…</string>
     <string name="remote_delivery_unconfirmed">未确认送达</string>
+    <string name="computer_storage_unavailable">暂时无法读取已保存的配对，正在重试。App 未解除配对。</string>
+    <string name="computer_storage_retry">重新读取配对</string>
+    <string name="computer_restore">恢复电脑配对</string>
+    <string name="computer_restore_detail">选择之前保存的电脑安装 ZIP</string>
+    <string name="computer_restore_confirm">从这份私人安装包恢复原电脑连接，无需重新配置电脑。若本地配对记录无法读取，会先保留副本再恢复。</string>
+    <string name="computer_restore_action">恢复配对</string>
+    <string name="computer_restore_failed">未能恢复配对。请选择开启过对话同步的原安装 ZIP，或等本地存储恢复后重试。</string>
 </resources>

@@ -139,6 +139,12 @@ async function publishEvent(endpoint,key,event,fetchImpl=fetch){
       preview[field]=Buffer.from(preview[field]).subarray(0,Math.floor(length/2)).toString('utf8').replace(/\uFFFD$/,'');
       previewWire=encode('event',event.id,preview,key);
     }
+    // A complete short question is control state, not a history download. Keep it
+    // authenticated in the inline frame when it fits; never truncate questions/options.
+    if(event.status==='input_required'&&event.user_input){
+      const inline=encode('event',event.id,{...preview,user_input:event.user_input},key);
+      if(Buffer.byteLength(JSON.stringify(inline))<=3500)previewWire=inline;
+    }
   }
   const response=await fetchImpl(endpoint,{method:'POST',headers:large?{'Filename':'codex-remote.bin','Message':JSON.stringify(previewWire),'Content-Type':'application/octet-stream'}:{'Content-Type':'text/plain'},
     body:large?Buffer.from(full.encrypted,'base64'):JSON.stringify(full),signal:AbortSignal.timeout(15000)});

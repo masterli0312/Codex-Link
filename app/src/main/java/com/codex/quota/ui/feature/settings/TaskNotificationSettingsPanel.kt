@@ -28,6 +28,7 @@ import com.codex.quota.notifications.task.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
@@ -44,13 +45,31 @@ fun TaskNotificationSettingsPanel() {
     val now = rememberQuotaClock()
     val computerStore = remember { ComputerConnectionStore(context) }
     val computerRevision by ComputerConnectionStore.changes.collectAsState()
+    val pairingUnavailable by computerStore.readFailure.collectAsState()
     var computers by remember { mutableStateOf<List<ComputerConnection>>(emptyList()) }
     var addComputer by remember { mutableStateOf(false) }
     var computerName by remember { mutableStateOf("") }
     var removing by remember { mutableStateOf<ComputerConnection?>(null) }
     var exportError by remember { mutableStateOf(false) }
     var exporting by remember { mutableStateOf(false) }
-    LaunchedEffect(computerRevision, settings) { computers = withContext(Dispatchers.IO) { computerStore.all(settings) } }
+    var restoring by remember { mutableStateOf(false) }
+    var restoreError by remember { mutableStateOf(false) }
+    var pendingRestore by remember { mutableStateOf<ComputerPairingBackup?>(null) }
+    val restorePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            restoring = true; restoreError = false
+            try {
+                pendingRestore = withContext(Dispatchers.IO) {
+                    requireNotNull(context.contentResolver.openInputStream(uri)).use(ComputerPairingBackup::readZip)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) { restoreError = true }
+            finally { restoring = false }
+        }
+    }
+    LaunchedEffect(computerRevision, settings) {
+        computerStore.observe(settings).flowOn(Dispatchers.IO).collect { computers = it }
+    }
     suspend fun shareComputer(computer: ComputerConnection) {
         exporting = true; exportError = false
         try {
@@ -113,21 +132,48 @@ fun TaskNotificationSettingsPanel() {
     Text(stringResource(R.string.remote_setup_detail), Modifier.padding(horizontal = 4.dp),
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     SettingsHeading(stringResource(R.string.task_pairing_title))
+    if (pairingUnavailable) {
+        Text(stringResource(R.string.computer_storage_unavailable), Modifier.padding(horizontal = 4.dp),
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        TextButton(onClick = { computerStore.retryRead() }) { Text(stringResource(R.string.computer_storage_retry)) }
+    }
     SettingsGroup {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(stringResource(R.string.task_pairing_steps), style = MaterialTheme.typography.bodyMedium)
-            Button(onClick = { computerName = ""; addComputer = true }, enabled = !exporting && computers.size < 8,
+            Button(onClick = { computerName = ""; addComputer = true }, enabled = !exporting && !restoring && !pairingUnavailable && computers.size < 8,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Icon(Icons.Outlined.Add, null); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.computer_add))
             }
             if (exportError) Text(stringResource(R.string.task_export_failed), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
         SettingsDivider()
+        SettingsNavigationRow(stringResource(R.string.computer_restore), stringResource(R.string.computer_restore_detail), Icons.Outlined.Restore) {
+            if (!restoring && !exporting) restorePicker.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+        }
+        if (restoreError) Text(stringResource(R.string.computer_restore_failed), Modifier.padding(16.dp),
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        SettingsDivider()
         SettingsNavigationRow(stringResource(R.string.task_copy_address), stringResource(R.string.task_pairing_address), Icons.Outlined.ContentCopy) {
             val clip = ClipData.newPlainText(context.getString(R.string.task_pairing_address), RelayRouting.endpoint(context, settings.endpoint))
             if (Build.VERSION.SDK_INT >= 33) clip.description.extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
             (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(clip)
         }
+    }
+    pendingRestore?.let { backup ->
+        AlertDialog(onDismissRequest = { if (!restoring) pendingRestore = null },
+            title = { Text(stringResource(R.string.computer_restore)) },
+            text = { Text(stringResource(R.string.computer_restore_confirm)) },
+            confirmButton = { TextButton(enabled = !restoring, onClick = { scope.launch {
+                restoring = true; restoreError = false
+                try {
+                    withContext(Dispatchers.IO) { computerStore.restore(backup) }
+                    pendingRestore = null
+                    if (store.read().enabled) TaskCompletionService.startIfEnabled(context)
+                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (_: Exception) { restoreError = true; pendingRestore = null }
+                finally { restoring = false }
+            } }) { Text(stringResource(R.string.computer_restore_action)) } },
+            dismissButton = { TextButton(enabled = !restoring, onClick = { pendingRestore = null }) { Text(stringResource(R.string.action_cancel)) } })
     }
     if (computers.isNotEmpty()) {
         SettingsHeading(stringResource(R.string.computer_connections))

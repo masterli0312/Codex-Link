@@ -19,7 +19,7 @@ class ConversationListViewModel(context: Context) : ViewModel() {
     val records = TaskInbox.changes.mapLatest { withContext(Dispatchers.IO) { inbox.list() } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(0), null)
     val computers = combine(TaskNotificationStore(appContext).settings, ComputerConnectionStore.changes) { settings, _ -> settings }
-        .mapLatest { settings -> withContext(Dispatchers.IO) { computerStore.all(settings) } }
+        .flatMapLatest { settings -> computerStore.observe(settings).flowOn(Dispatchers.IO) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(0), emptyList())
     val syncSelections = combine(computers, ConversationSyncSelectionStore.changes) { computers, _ -> computers }
         .mapLatest { computers -> withContext(Dispatchers.IO) {

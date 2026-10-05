@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import java.text.DateFormat
 import java.util.Date
 
@@ -32,6 +33,7 @@ enum class TaskConnectionState { OFF, CONNECTING, CONNECTED, RETRYING }
 object TaskNotificationConnection { val state = MutableStateFlow(TaskConnectionState.OFF) }
 
 /** Opt-in foreground connection, independent of quota refresh and all account credentials. */
+@OptIn(ExperimentalCoroutinesApi::class)
 class TaskCompletionService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var store: TaskNotificationStore
@@ -55,9 +57,14 @@ class TaskCompletionService : Service() {
             listening = true
             scope.launch {
                 val computers = ComputerConnectionStore(this@TaskCompletionService)
-                combine(store.settings, ComputerConnectionStore.changes) { settings, _ ->
-                    settings.copy(previewEnabled = false) to computers.all(settings).map { it.copy(name = "", lastProbeId = "", lastProbeAt = 0, lastReachableAt = 0, reachable = false, checking = false) }
-                }.distinctUntilChanged().collectLatest { (settings, connections) ->
+                combine(store.settings, ComputerConnectionStore.changes) { settings, _ -> settings.copy(previewEnabled = false) }
+                    .flatMapLatest { settings -> computers.observe(settings).map { connections ->
+                        settings to connections.map { it.copy(name = "", lastProbeId = "", lastProbeAt = 0, lastReachableAt = 0, reachable = false, checking = false) }
+                    } }.distinctUntilChanged().collectLatest { (settings, connections) ->
+                    if (settings.enabled && connections.isEmpty() && computers.readFailure.value) {
+                        setConnectionState(TaskConnectionState.RETRYING, "pairing-storage")
+                        return@collectLatest
+                    }
                     if (!settings.enabled || connections.isEmpty()) { stopSelf(); return@collectLatest }
                     relayStates.clear()
                     coroutineScope {

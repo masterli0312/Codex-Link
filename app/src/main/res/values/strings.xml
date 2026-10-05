@@ -879,4 +879,11 @@
     <string name="conversation_connection_manage">Manage connections</string>
     <string name="remote_delivery_pending">Sending…</string>
     <string name="remote_delivery_unconfirmed">Delivery unconfirmed</string>
+    <string name="computer_storage_unavailable">The saved pairing is temporarily unavailable. Retrying; your pairing has not been removed.</string>
+    <string name="computer_storage_retry">Retry reading pairing</string>
+    <string name="computer_restore">Restore computer pairing</string>
+    <string name="computer_restore_detail">Choose a previously saved Windows installation ZIP</string>
+    <string name="computer_restore_confirm">Restore the original computer connection from this private installation package. The computer does not need to be set up again. Any unreadable local record will be kept as a recovery copy.</string>
+    <string name="computer_restore_action">Restore pairing</string>
+    <string name="computer_restore_failed">Could not restore pairing. Select the original ZIP with conversation sync enabled, or retry when local storage is available.</string>
 </resources>

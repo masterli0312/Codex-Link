@@ -7,6 +7,8 @@ import android.os.Build
 import android.os.PersistableBundle
 import android.widget.TextView
 import android.text.method.LinkMovementMethod
+import android.text.TextPaint
+import android.text.style.MetricAffectingSpan
 import android.view.ViewGroup
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,10 +32,12 @@ import com.codex.quota.notifications.task.ConversationFileTransfer
 import io.noties.markwon.AbstractMarkwonPlugin
 import io.noties.markwon.Markwon
 import io.noties.markwon.MarkwonConfiguration
+import io.noties.markwon.MarkwonSpansFactory
 import io.noties.markwon.LinkResolver
 import io.noties.markwon.LinkResolverDef
 import io.noties.markwon.core.MarkwonTheme
 import io.noties.markwon.ext.tables.TablePlugin
+import org.commonmark.node.StrongEmphasis
 
 @Composable
 internal fun ConversationMessage(message: TaskConversationMessage, showCopy: Boolean = true, recordId: String? = null) {
@@ -117,6 +121,11 @@ private fun MarkdownReply(text: String, onFileLink: (String) -> Boolean = { fals
     val latestFileLink by rememberUpdatedState(onFileLink)
     val markwon = remember(context, colors) {
         Markwon.builder(context).usePlugin(TablePlugin.create(context)).usePlugin(object : AbstractMarkwonPlugin() {
+            override fun configureSpansFactory(builder: MarkwonSpansFactory.Builder) {
+                // Some Android CJK fallback fonts ignore a requested bold typeface.
+                // Draw the author's **emphasis** with explicit weight on both devices.
+                builder.setFactory(StrongEmphasis::class.java) { _, _ -> VisibleStrongEmphasisSpan() }
+            }
             override fun configureConfiguration(builder: MarkwonConfiguration.Builder) {
                 val standard = LinkResolverDef()
                 builder.linkResolver(LinkResolver { view, link -> if (!latestFileLink(link)) standard.resolve(view, link) })
@@ -148,4 +157,9 @@ private fun MarkdownReply(text: String, onFileLink: (String) -> Boolean = { fals
             view.requestLayout()
         }
     })
+}
+
+private class VisibleStrongEmphasisSpan : MetricAffectingSpan() {
+    override fun updateDrawState(paint: TextPaint) { paint.isFakeBoldText = true }
+    override fun updateMeasureState(paint: TextPaint) { paint.isFakeBoldText = true }
 }

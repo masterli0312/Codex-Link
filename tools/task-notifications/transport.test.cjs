@@ -2,6 +2,27 @@
 const test=require('node:test'),assert=require('node:assert/strict'),crypto=require('node:crypto');
 const {subscribeCommands,CommandDispatcher,retryDelay,readStream,publishEvent,pruneOutbox,transportFailure}=require('../../app/src/main/assets/task-notifications/remote.cjs');
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
+test('large history keeps a complete short question inline without waiting for its attachment',async()=>{
+ const key=Buffer.alloc(32,7).toString('base64'),id=crypto.randomUUID(),host=crypto.randomUUID(),thread=crypto.randomUUID();
+ const input={id:crypto.randomUUID(),turn_id:'current',is_blocking:false,questions:[{id:'choice',header:'',question:'Choose an option',is_other:true,is_secret:false,options:[{label:'First',description:''},{label:'Second',description:''}]}]};
+ const event={id,request_id:crypto.randomUUID(),host_id:host,thread_id:thread,conversation_id:crypto.createHash('sha256').update(thread).digest('hex'),
+  status:'input_required',seq:1,at:Date.now(),turn_id:'current',user_input:input,snapshot:{messages:[{text:'history '.repeat(4000)}]}};
+ let published;
+ await publishEvent('https://fixture.invalid/topic',key,event,async(_,request)=>{published=request;return new Response('{}',{status:200});});
+ const {decode}=require('../../app/src/main/assets/task-notifications/remote-core.cjs');
+ const inline=decode('event',JSON.parse(published.headers.Message),key);
+ assert.deepEqual(inline.user_input,input);assert.equal(inline.attachment_pending,true);
+ assert.ok(Buffer.byteLength(published.headers.Message)<=3500);
+ assert.equal(inline.snapshot,undefined);assert.equal(decode('event',{schema_version:'2.0',id,encrypted:published.body.toString('base64')},key).snapshot.messages.length,1);
+});
+test('oversized question is never truncated into a misleading actionable preview',async()=>{
+ const key=Buffer.alloc(32,7).toString('base64'),event={id:crypto.randomUUID(),request_id:crypto.randomUUID(),host_id:crypto.randomUUID(),thread_id:crypto.randomUUID(),
+  conversation_id:'fixture',status:'input_required',seq:1,at:Date.now(),turn_id:'turn',user_input:{id:crypto.randomUUID(),turn_id:'turn',is_blocking:false,questions:[{id:'q',header:'',question:'q'.repeat(5000),options:[]}]}};
+ let published;await publishEvent('https://fixture.invalid/topic',key,event,async(_,request)=>{published=request;return new Response('{}',{status:200});});
+ const {decode}=require('../../app/src/main/assets/task-notifications/remote-core.cjs');
+ assert.equal(decode('event',JSON.parse(published.headers.Message),key).user_input,undefined);
+ assert.equal(decode('event',{schema_version:'2.0',id:event.id,encrypted:published.body.toString('base64')},key).user_input.questions[0].question.length,5000);
+});
 test('a daily relay quota is distinguished from a brief request limit without storing server text',async()=>{
  const response=()=>new Response(JSON.stringify({code:42908,error:'private server detail'}),{status:429});
  await assert.rejects(publishEvent('https://fixture.invalid/topic',Buffer.alloc(32).toString('base64'),

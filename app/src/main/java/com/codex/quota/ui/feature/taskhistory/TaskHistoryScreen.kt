@@ -447,8 +447,12 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
         }
     }
     LaunchedEffect(id, computerRevision, record?.id, record?.snapshot?.remote_ref?.host_id, record?.remoteState?.command?.host_id) {
-        pairedComputer = withContext(Dispatchers.IO) { record?.let { computerStore.find(it) } }
-        pairingResolved = record != null
+        do {
+            pairedComputer = withContext(Dispatchers.IO) { record?.let { computerStore.find(it) } }
+            pairingResolved = record != null
+            if (!computerStore.readFailure.value || record == null) break
+            kotlinx.coroutines.delay(2_000)
+        } while (true)
     }
     val activeId = record?.id ?: id
     val syncRevision by ConversationSyncSelectionStore.changes.collectAsStateWithLifecycle()
@@ -638,8 +642,8 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
         Column(Modifier.fillMaxSize().padding(padding)) {
             // Dialog ownership is outside lazy history: reading an older message must
             // not prevent a live question from appearing or recreate it on scroll.
-            val ownInput = state?.event?.takeIf { it.status == "input_required" && !it.attachment_pending }?.user_input
-            val watchedInput = result?.takeIf { request?.action == "read" && it.status == "input_required" && !it.attachment_pending }?.user_input
+            val ownInput = state?.event?.takeIf(RemoteInputRules::ready)?.user_input
+            val watchedInput = result?.takeIf { request?.action == "read" && RemoteInputRules.ready(it) }?.user_input
             if (canConnect) (ownInput ?: watchedInput)?.takeIf(RemoteInputRules::valid)?.let { input ->
                 RemoteInputPrompt(input) { answers -> client.answerInput(activeId, input.id, answers, library = ownInput == null) }
             }

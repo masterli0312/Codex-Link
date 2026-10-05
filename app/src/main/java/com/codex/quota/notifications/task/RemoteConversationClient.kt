@@ -484,6 +484,12 @@ class RemoteConversationClient(private val context: Context) {
                     } == true } ?: return@collect
                     if (!ConversationSyncRules.allows(record, computer, syncStore.read(computer))) return@collect
                     if (RemoteProtocol.accepts(record.remoteState!!, event)) {
+                        if (event.partial && RemoteInputRules.ready(event)) {
+                            ingestRoot(record.id, event)
+                            val inline = inbox.read(record.id) ?: return@collect
+                            inline.remoteState?.takeIf { RemoteAttention.matches(it, event) }?.let { onAttention(inline, event) }
+                            return@collect
+                        }
                         if (event.attachment_pending) downloadEvent(computer.endpoint, envelope, wire, computer.key)?.let { event = it }
                         if (computers.endpoint(record.endpointHash)?.key != computer.key) return@collect
                         ingestRoot(record.id, event)
@@ -539,6 +545,7 @@ class RemoteConversationClient(private val context: Context) {
     // Includes synchronous OkHttp recovery publishes and encrypted cache access. Callers may
     // launch from a Compose effect, so the entire subscription must stay off the UI thread.
     suspend fun listen(recordId: String) = withContext(Dispatchers.IO) {
+        var questionDownload: Job? = null
         val initial = inbox.read(recordId) ?: return@withContext
         if (!initial.libraryAnchor) {
             val computer = computers.find(initial) ?: return@withContext
@@ -637,6 +644,12 @@ class RemoteConversationClient(private val context: Context) {
                     val query = currentRecord.libraryRequest
                     if (query != null && event.request_id == query.id && event.host_id == query.host_id &&
                         event.thread_id == query.thread_id && event.conversation_id == query.conversation_id) {
+                        if (event.partial && RemoteInputRules.ready(event)) {
+                            inbox.updateLibrary(recordId, event)
+                            questionDownload?.cancel()
+                            questionDownload = launch { downloadEvent(endpoint, envelope, wire, key)?.let { full -> inbox.updateLibrary(recordId, full) } }
+                            return@collect
+                        }
                         if (event.partial) downloadEvent(endpoint, envelope, wire, key)?.let { event = it }
                         val libraryState = RemoteConversationState(query, currentRecord.libraryResult)
                         if ((event.reply_patch != null || event.reply_patch_pending) && RemoteProtocol.materialize(libraryState, event) == null) {
@@ -663,6 +676,12 @@ class RemoteConversationClient(private val context: Context) {
                     }
                     val current = currentRecord.remoteState ?: return@collect
                     if (!RemoteProtocol.accepts(current, event)) return@collect
+                    if (event.partial && RemoteInputRules.ready(event)) {
+                        ingestRoot(recordId, event)
+                        questionDownload?.cancel()
+                        questionDownload = launch { downloadEvent(endpoint, envelope, wire, key)?.let { full -> ingestRoot(recordId, full) } }
+                        return@collect
+                    }
                     if (event.partial) downloadEvent(endpoint, envelope, wire, key)?.let { event = it }
                     ingestRoot(recordId, event)
                 }
@@ -670,7 +689,7 @@ class RemoteConversationClient(private val context: Context) {
             catch (e: Exception) { failure = e /* No secret URLs or conversation content in logs. */ }
             RelayConnection.retry(context, failure, retryDelay); retryDelay = (retryDelay * 2).coerceAtMost(30_000L)
         }
-        } finally { startup?.cancel(); recovery.cancel() }
+        } finally { questionDownload?.cancel(); startup?.cancel(); recovery.cancel() }
     }
     private suspend fun ingestRoot(recordId: String, event: RemoteEvent) {
         var missingBase: RemoteCommand? = null

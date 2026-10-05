@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.AtomicFile
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.delay
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -46,14 +48,31 @@ class ComputerConnectionStore(private val context: Context) {
     private val file = AtomicFile(File(context.noBackupFilesDir, "remote-computers.json"))
     private val keys = TaskContentKeys(context)
     private val json = Json { ignoreUnknownKeys = true }
-    private fun read(): ComputerRegistry = runCatching {
-        require(file.baseFile.length() <= 64_000)
-        json.decodeFromString<ComputerRegistry>(requireNotNull(keys.decryptLocal(String(file.readFully(), Charsets.UTF_8))))
-    }.getOrElse { ComputerRegistry(legacyRemoved = file.baseFile.exists()) }
+    private val cache = synchronized(lock) {
+        caches.getOrPut(file.baseFile.absolutePath) { PairingRegistryCache(ComputerRegistry()) }
+    }
+    val readFailure get() = cache.unavailable
+    private fun read(): ComputerRegistry = cache.read(file.baseFile.exists() || File(file.baseFile.path + ".bak").exists()) {
+        // readFully restores AtomicFile's old backup before checking the actual bytes.
+        val bytes = file.readFully()
+        require(bytes.size <= 64_000)
+        json.decodeFromString<ComputerRegistry>(requireNotNull(keys.decryptLocal(String(bytes, Charsets.UTF_8))))
+    }.let { if (readFailure.value && it == ComputerRegistry()) ComputerRegistry(legacyRemoved = true) else it }
+    private fun readForWrite() = cache.requireWritable(read())
+    /** Retry a failed read instead of interpreting it as an unpair action or stopping subscriptions. */
+    fun observe(settings: TaskNotificationSettings) = flow {
+        do {
+            emit(all(settings))
+            if (!readFailure.value) break
+            delay(2_000)
+        } while (true)
+    }
+    fun retryRead() { changes.update { it + 1 } }
     private fun save(value: ComputerRegistry) {
         val stream = file.startWrite()
         try { stream.write(keys.encryptLocal(json.encodeToString(value)).toByteArray(Charsets.UTF_8)); file.finishWrite(stream) }
         catch (e: Exception) { file.failWrite(stream); throw e }
+        cache.remember(value)
         changes.update { it + 1 }
     }
     fun all(settings: TaskNotificationSettings = TaskNotificationStore(context).read()): List<ComputerConnection> = synchronized(lock) {
@@ -84,7 +103,7 @@ class ComputerConnectionStore(private val context: Context) {
     }
     private fun findId(id: String, registry: ComputerRegistry = read()) = registry.connections.firstOrNull { it.id == id } ?: legacy(registry)?.takeIf { it.id == id }
     fun add(name: String): ComputerConnection = synchronized(lock) {
-        val registry = read(); require(registry.connections.size < 7 && name.toByteArray().size <= 160)
+        val registry = readForWrite(); require(registry.connections.size < 7 && name.toByteArray().size <= 160)
         val host = UUID.randomUUID().toString()
         val nonce = ByteArray(24).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
         val current = TaskNotificationStore(context).read().endpoint
@@ -93,8 +112,32 @@ class ComputerConnectionStore(private val context: Context) {
         val connection = ComputerConnection(host, host, name.trim(), endpoint, TaskContentCipher.newKey(), System.currentTimeMillis() / 1000)
         save(registry.copy(connections = registry.connections + connection)); connection
     }
+    /** Restore the exact identity the desktop already uses, without creating new topics or keys. */
+    fun restore(backup: ComputerPairingBackup): ComputerConnection = synchronized(lock) {
+        // Validate even when called outside the file-picker import path.
+        require(TaskNotificationProtocol.normalizeEndpoint(backup.endpoint) == backup.endpoint)
+        require(java.util.Base64.getDecoder().decode(backup.key).size == 32)
+        require(UUID.fromString(backup.hostId).toString() == backup.hostId)
+        val hadRegistry = file.baseFile.exists() || File(file.baseFile.path + ".bak").exists()
+        val registry = read()
+        val unreadable = readFailure.value
+        if (unreadable) {
+            // Keep the unreadable original for recovery; imports must not silently destroy it.
+            val original = file.baseFile
+            if (original.exists()) original.copyTo(File(original.parentFile, "remote-computers.unreadable-${System.currentTimeMillis()}"))
+        }
+        val existing = registry.connections.firstOrNull { it.hostId == backup.hostId }
+        require(existing != null || registry.connections.size < 7)
+        val restored = ComputerConnection(existing?.id ?: backup.hostId, backup.hostId, existing?.name.orEmpty(),
+            backup.endpoint, backup.key, existing?.createdAtSeconds ?: System.currentTimeMillis() / 1000)
+        val connections = registry.connections.filterNot { it.hostId == backup.hostId } + restored
+        val replacesLegacy = unreadable || !hadRegistry || registry.legacyProbe?.hostId == backup.hostId
+        save(registry.copy(connections = connections, legacyRemoved = registry.legacyRemoved || replacesLegacy,
+            legacyProbe = if (replacesLegacy) null else registry.legacyProbe))
+        restored
+    }
     fun remove(id: String) = synchronized(lock) {
-        val registry = read(); val connection = all().firstOrNull { it.id == id } ?: return@synchronized
+        val registry = readForWrite(); val connection = all().firstOrNull { it.id == id } ?: return@synchronized
         save(if (connection.legacy) registry.copy(legacyRemoved = true, legacyProbe = null) else
             registry.copy(connections = registry.connections.filterNot { it.id == id }))
         File(context.cacheDir, "task-notifications/Codex-Usage-Windows-" + connection.id.take(8) + ".zip").delete()
@@ -116,14 +159,16 @@ class ComputerConnectionStore(private val context: Context) {
     }
     private fun mutate(id: String, change: (ComputerConnection) -> ComputerConnection) {
         val registry = read()
+        if (readFailure.value) return // Presence changes must never overwrite unreadable pairings.
         val current = findId(id, registry) ?: return
         val updated = change(current)
         save(if (current.legacy) registry.copy(legacyProbe = updated.copy(key = "")) else
             registry.copy(connections = registry.connections.map { if (it.id == id) updated else it }))
     }
-    fun clear() = synchronized(lock) { file.delete(); changes.update { it + 1 }; Unit }
+    fun clear() = synchronized(lock) { file.delete(); cache.clear(); changes.update { it + 1 }; Unit }
     companion object {
         private val lock = Any()
+        private val caches = mutableMapOf<String, PairingRegistryCache<ComputerRegistry>>()
         val changes = MutableStateFlow(0L)
 
         /** Historical snapshots may name old bridge installations. Keep a verified pairing stable. */

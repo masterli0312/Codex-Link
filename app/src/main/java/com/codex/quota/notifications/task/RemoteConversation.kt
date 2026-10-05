@@ -48,6 +48,10 @@ data class RemoteInputRequest(val id: String, val turn_id: String, val is_blocki
 
 /** Validate the server's bounded question schema and require an explicit answer to every question. */
 object RemoteInputRules {
+    /** Snapshot attachments may still be loading; a complete authenticated question can be answered. */
+    fun ready(event: RemoteEvent): Boolean = event.status == "input_required" && event.user_input?.let {
+        valid(it) && it.turn_id == event.turn_id
+    } == true
     fun valid(request: RemoteInputRequest): Boolean = request.id.matches(Regex("[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}")) &&
         request.turn_id.length in 1..128 && request.questions.size in 1..6 &&
         request.questions.map { it.id }.distinct().size == request.questions.size && request.questions.all { q ->
@@ -231,7 +235,7 @@ object RemoteProtocol {
         val event = requireNotNull(state.event)
         val input = requireNotNull(event.user_input)
         require(event.request_id == state.command.id && event.host_id == state.command.host_id && event.thread_id == state.command.thread_id &&
-            event.conversation_id == state.command.conversation_id && event.status == "input_required" && !event.attachment_pending &&
+            event.conversation_id == state.command.conversation_id && RemoteInputRules.ready(event) &&
             input.id == inputId && input.turn_id == event.turn_id && RemoteInputRules.accepts(input, answers))
         return control(state.command, "answer_input").copy(input_id = input.id, expected_turn_id = input.turn_id, answers = answers)
     }
