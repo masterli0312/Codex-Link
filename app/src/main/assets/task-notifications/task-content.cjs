@@ -52,6 +52,12 @@ function tailLines(file,end,max=4*1024*1024){
   lines.pop(); // Never parse an incomplete line.
   return {lines,partial:start>0};
 }
+function rolloutMeta(file){
+  const fd=fs.openSync(file,'r'),first=Buffer.alloc(Math.min(65536,fs.fstatSync(fd).size));
+  try{fs.readSync(fd,first,0,first.length,0);}finally{fs.closeSync(fd);}
+  for(const line of first.toString('utf8').split('\n'))try{const row=JSON.parse(line);if(row.type==='session_meta')return row.payload;}catch{}
+  return null;
+}
 function findRollout(home,id){
   let newest=null;
   function walk(folder){
@@ -101,14 +107,17 @@ function readSnapshot(config,id,turn,knownFile,end){
   if(!file)return null;
   const root=fs.realpathSync(path.join(config.codexHome,'sessions'))+path.sep;
   if(!fs.realpathSync(file).startsWith(root))return null;
+  const meta=rolloutMeta(file);
+  if(meta&&(meta.id&&meta.id!==id||meta.source?.subagent))return null;
   const tail=tailLines(file,end),messages=[];
-  let truncated=tail.partial,found=false,reply='',completedAt='',cwd='';
+  let truncated=tail.partial,found=false,reply='',completedAt='',cwd=typeof meta?.cwd==='string'?meta.cwd:'';
   for(const line of tail.lines){
     if(line.length>1024*1024){truncated=true;continue;}
     let row;try{row=JSON.parse(line);}catch{continue;}
     const p=row.payload||{};
     if(row.type==='session_meta'&&p.id&&p.id!==id)return null;
     if(row.type==='session_meta'&&typeof p.cwd==='string')cwd=p.cwd;
+    if(row.type==='turn_context'&&typeof p.cwd==='string')cwd=p.cwd;
     if(row.type==='session_meta'&&p.source?.subagent)return null;
     if(row.type==='response_item'&&p.type==='message'&&['user','assistant'].includes(p.role)&&
       (p.role==='user'||!p.phase||['commentary','final','final_answer'].includes(p.phase))){
@@ -150,9 +159,7 @@ function readLatestSnapshot(config,id){
   const file=findRollout(config.codexHome,id);if(!file)return null;
   const root=fs.realpathSync(path.join(config.codexHome,'sessions'))+path.sep;
   if(!fs.realpathSync(file).startsWith(root))return null;
-  const fd=fs.openSync(file,'r'),first=Buffer.alloc(Math.min(65536,fs.statSync(file).size));
-  try{fs.readSync(fd,first,0,first.length,0);}finally{fs.closeSync(fd);}
-  let meta;for(const l of first.toString('utf8').split('\n')){try{const r=JSON.parse(l);if(r.type==='session_meta'){meta=r.payload;break;}}catch{}}
+  const meta=rolloutMeta(file);
   if(meta?.id!==id||meta.source?.subagent)return null;
   let latest,completed;
   for(const l of tailLines(file).lines){if(l.length>1024*1024)continue;try{const r=JSON.parse(l),p=r.payload;

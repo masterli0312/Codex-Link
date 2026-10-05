@@ -52,6 +52,19 @@ test('large old histories use a bounded visible tail and never export tool outpu
  }finally{f.cleanup();}
 });
 
+test('bounded rollout tails recover the original workspace for document links',()=>{
+ const f=fixture();try{
+  fs.writeFileSync(path.join(f.home,'Report.pdf'),'document content');
+  fs.writeFileSync(f.file,f.line('session_meta',{id:thread,source:'vscode',cwd:f.home})+
+   f.line('response_item',{type:'function_call_output',output:'X'.repeat(5*1024*1024)})+
+   f.message('assistant','[Report](Report.pdf)','final_answer')+
+   f.line('event_msg',{type:'task_complete',turn_id:'document',last_agent_message:'[Report](Report.pdf)'}));
+  const value=readSnapshot({codexHome:f.home},thread,'document',f.file);
+  assert.equal(value.messages[0].files[0].name,'Report.pdf');
+  assert.equal(JSON.stringify(value).includes(f.home),false);
+ }finally{f.cleanup();}
+});
+
 test('snapshot uses latest actual title and stops at this completion, excluding tools and hidden roles',()=>{
   const f=fixture(); try{
     const result=readSnapshot({codexHome:f.home},thread,'finished');

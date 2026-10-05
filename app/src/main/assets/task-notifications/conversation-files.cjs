@@ -3,7 +3,10 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const MAX=256*1024*1024,sources=new Map(),hash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const uploads=new WeakMap();
-const protectedPath=relative=>relative.split(/[\\/]/).some(p=>/^\.(?:git|ssh|codex|config)$|^\.env(?:\.|$)/i.test(p))||/^(?:auth|credentials|secrets)(?:\.(?:json|ya?ml|toml|ini)|$)/i.test(path.basename(relative));
+const protectedPath=relative=>relative.split(/[\\/]/).some(p=>/^\.(?:git|ssh|codex|config|aws|azure|kube)$|^\.env(?:\.|$)/i.test(p))||/^(?:auth|credentials|secrets)(?:\.(?:json|ya?ml|toml|ini)|$)/i.test(path.basename(relative));
+const documents=/\.(?:pdf|pptx?|docx?|xlsx?|odt|ods|odp|rtf|csv)$/i;
+const samePath=(a,b)=>process.platform==='win32'?a.toLowerCase()===b.toLowerCase():a===b;
+const within=(root,file)=>{const relative=path.relative(root,file);return !!relative&&relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative);};
 function projectFiles(thread,item,cwd=''){
  if(item?.type!=='agentMessage'||typeof item.text!=='string'||!path.isAbsolute(cwd))return [];
  const files=[];
@@ -15,13 +18,19 @@ function projectFiles(thread,item,cwd=''){
   source=source.replace(/:\d+(?::\d+)?$/,'');
   if(/^[a-z][a-z0-9+.-]*:/i.test(source)&&!path.isAbsolute(source)||source.includes('\0'))continue;
   const file=path.resolve(cwd,source),relative=path.relative(cwd,file);
-  if(!relative||relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))continue;
+  let exact='';
+  if(!within(cwd,file)){
+   // An explicit native assistant document link can refer to a desktop/export folder.
+   // Pin that existing exact file; a phone cannot choose any path or traverse out of cwd.
+   if(!path.isAbsolute(source)||!documents.test(file))continue;
+   try{exact=fs.realpathSync(file);if(!samePath(exact,file)||!fs.statSync(exact).isFile())continue;}catch{continue;}
+  }
   const name=path.basename(file);
   // Never expose authentication/configuration stores as downloadable artifacts.
-  if(protectedPath(relative))continue;
+  if(protectedPath(relative)||protectedPath(file))continue;
   const id=hash(thread+':file:'+file),ref={id,name};
   if(Buffer.byteLength(name)>240)continue;
-  sources.delete(id);sources.set(id,{thread,file,cwd});
+  sources.delete(id);sources.set(id,{thread,file,cwd,exact});
   while(sources.size>512)sources.delete(sources.keys().next().value);
   if(!files.some(f=>f.id===id))files.push(ref);
   if(files.length>=10)break;
@@ -29,10 +38,16 @@ function projectFiles(thread,item,cwd=''){
  return files;
 }
 const hasFile=(thread,id)=>sources.get(id)?.thread===thread;
+async function verifiedPath(entry){
+ const real=await fs.promises.realpath(entry.file);
+ if(protectedPath(real))throw Error('FILE_UNAVAILABLE');
+ if(entry.exact){if(!samePath(real,entry.exact))throw Error('FILE_UNAVAILABLE');}
+ else if(!within(await fs.promises.realpath(entry.cwd),real))throw Error('FILE_UNAVAILABLE');
+ return real;
+}
 async function fileBytes(thread,id){
  const entry=sources.get(id);if(!entry||entry.thread!==thread)throw Error('FILE_UNAVAILABLE');
- const root=await fs.promises.realpath(entry.cwd),real=await fs.promises.realpath(entry.file),relative=path.relative(root,real);
- if(!relative||relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative)||protectedPath(relative))throw Error('FILE_UNAVAILABLE');
+ const real=await verifiedPath(entry);
  const handle=await fs.promises.open(real,'r');
  try{
   const stat=await handle.stat();if(!stat.isFile()||stat.size<1||stat.size>MAX)throw Error('FILE_TOO_LARGE');
@@ -46,8 +61,7 @@ const aad=(host,thread,id)=>'CodexUsage:file:'+host+':'+thread+':'+id;
 const streamKey=(key,host,thread,id)=>crypto.createHmac('sha256',Buffer.from(key,'base64')).update(aad(host,thread,id)+':stream-v1').digest();
 async function publishFile(controller,c,fetchImpl=fetch){
  const entry=sources.get(c.file_id);if(!entry||entry.thread!==c.thread_id)throw Error('FILE_UNAVAILABLE');
- const root=await fs.promises.realpath(entry.cwd),real=await fs.promises.realpath(entry.file),relative=path.relative(root,real);
- if(!relative||relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative)||protectedPath(relative))throw Error('FILE_UNAVAILABLE');
+ const real=await verifiedPath(entry);
  const handle=await fs.promises.open(real,'r');
  try{
  const stat=await handle.stat();if(!stat.isFile()||stat.size<1||stat.size>MAX)throw Error('FILE_TOO_LARGE');

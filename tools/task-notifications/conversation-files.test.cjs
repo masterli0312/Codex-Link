@@ -30,6 +30,55 @@ test('export rejects directories, oversize files and symlinks escaping the real 
   await assert.rejects(files.fileBytes(thread,escape.id),/FILE_UNAVAILABLE/);
  }finally{f.close();}
 });
+
+test('explicit native document links outside the workspace remain downloadable, without accepting traversal or credentials',async()=>{
+ const f=fixture();try{
+  const workspace=path.join(f.dir,'workspace'),desktop=path.join(f.dir,'Desktop');
+  fs.mkdirSync(workspace);fs.mkdirSync(desktop);
+  for(const name of ['report.pdf','slides.pptx','notes.docx'])fs.writeFileSync(path.join(desktop,name),name);
+  const links=['report.pdf','slides.pptx','notes.docx'].map(name=>'['+name+'](<'+path.join(desktop,name).replace(/\\/g,'/')+'>)').join(' ');
+  const refs=files.projectFiles(thread,{type:'agentMessage',text:links},workspace);
+  assert.equal(refs.length,3);
+  for(const ref of refs)assert.equal((await files.fileBytes(thread,ref.id)).bytes.toString(),ref.name);
+  assert.deepEqual(files.projectFiles(thread,{type:'agentMessage',text:'[escape](../Desktop/report.pdf)'},workspace),[]);
+  const secret=path.join(f.dir,'.codex');fs.mkdirSync(secret);fs.writeFileSync(path.join(secret,'credentials.pdf'),'private');
+  assert.deepEqual(files.projectFiles(thread,{type:'agentMessage',text:'[secret](<'+path.join(secret,'credentials.pdf')+'>)'},workspace),[]);
+  assert.deepEqual(files.projectFiles(thread,{type:'userMessage',text:links},workspace),[]);
+  const outside=path.join(f.dir,'elsewhere');fs.mkdirSync(outside);fs.writeFileSync(path.join(outside,'report.pdf'),'not authorized');
+  fs.symlinkSync(outside,path.join(desktop,'shortcut'),process.platform==='win32'?'junction':'dir');
+  assert.deepEqual(files.projectFiles(thread,{type:'agentMessage',text:'[link](<'+path.join(desktop,'shortcut','report.pdf')+'>)'},workspace),[]);
+ }finally{f.close();}
+});
+
+test('history pages preserve document references using the exact thread metadata',async()=>{
+ const f=fixture();try{
+  fs.writeFileSync(path.join(f.dir,'Report.pdf'),'history document');
+  const client={call:async(method)=>method==='thread/read'?{thread:{id:thread,cwd:f.dir}}:
+   {data:[{id:'older',status:'completed',items:[{id:'answer',type:'agentMessage',text:'[Report](Report.pdf)'}]}]}};
+  const page=await require('../../app/src/main/assets/task-notifications/conversation-library.cjs').historyPage(client,thread);
+  assert.equal(page.messages[0].files[0].name,'Report.pdf');
+  assert.equal((await files.fileBytes(thread,page.messages[0].files[0].id)).bytes.toString(),'history document');
+ }finally{f.close();}
+});
+
+test('a bridge restart recovers an external document from native history without starting a turn',async()=>{
+ const f=fixture();let controller;try{
+  const workspace=path.join(f.dir,'workspace');fs.mkdirSync(workspace);
+  const file=path.join(f.dir,'Report (final).docx');fs.writeFileSync(file,'exported office document');
+  const recoveredThread=crypto.randomUUID(),fileId=crypto.createHash('sha256').update(recoveredThread+':file:'+file).digest('hex');
+  const calls=[],events=[];
+  const client={setHandlers(){},async connect(){},close(){},async call(method){calls.push(method);
+   if(method==='thread/read')return {thread:{id:recoveredThread,cwd:workspace}};
+   if(method==='thread/turns/list')return {data:[{id:'turn',status:'completed',items:[{id:'answer',type:'agentMessage',text:'[Document](<'+file+'>)'}]}]};
+   throw Error('Unexpected native method');}};
+  controller=new RemoteController({directory:f.dir,key,hostId:host,endpoint:'https://relay.invalid/pair',clientFactory:()=>client,emit:async e=>events.push(e),imageFetch:async(_,options)=>{
+   for await(const _ of options.body){}return {ok:true,body:[Buffer.from('{"attachment":{"url":"https://relay.invalid/file/document.bin"}}')]};}});
+  await controller.handle({id:crypto.randomUUID(),action:'file',host_id:host,thread_id:recoveredThread,
+   conversation_id:crypto.createHash('sha256').update(recoveredThread).digest('hex'),issued_at:Date.now(),file_id:fileId});
+  assert.deepEqual(calls,['thread/read','thread/turns/list']);
+  assert.equal(events[0].error,undefined);assert.equal(events[0].file.name,'Report (final).docx');
+ }finally{controller?.close();f.close();}
+});
 test('file transport preserves exact bytes and is authenticated to this host/thread/file',async()=>{
  const f=fixture();let controller;try{
   fs.writeFileSync(path.join(f.dir,'report.txt'),'exact exported content');

@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Build
 import android.os.PersistableBundle
 import android.widget.TextView
+import android.text.method.LinkMovementMethod
 import android.view.ViewGroup
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -141,6 +142,8 @@ private fun MarkdownReply(text: String, onFileLink: (String) -> Boolean = { fals
                 view.setLineSpacing(6 * view.resources.displayMetrics.density, 1.2f)
             }
             markwon.setMarkdown(view, text)
+            view.movementMethod = LinkMovementMethod.getInstance()
+            view.linksClickable = true
             view.tag = presentation
             view.requestLayout()
         }

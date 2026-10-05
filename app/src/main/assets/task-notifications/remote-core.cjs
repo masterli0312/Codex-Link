@@ -449,7 +449,7 @@ class RemoteController{
           if(meta?.id!==c.thread_id)throw Error('FILE_UNAVAILABLE');
           let cursor='';
           for(let n=0;n<12;n++){
-            const page=await library.historyPage(client,c.thread_id,cursor);
+            const page=await library.historyPage(client,c.thread_id,cursor,meta);
             library.snapshot({...meta,turns:page.turns},this.hostId);
             if(files.hasFile(c.thread_id,c.file_id))break;
             cursor=page.next_cursor;if(!cursor)break;
@@ -471,7 +471,7 @@ class RemoteController{
           if(meta?.id!==c.thread_id)throw Error('IMAGE_UNAVAILABLE');
           let cursor='';
           for(let n=0;n<12;n++){
-            const page=await library.historyPage(client,c.thread_id,cursor);
+            const page=await library.historyPage(client,c.thread_id,cursor,meta);
             library.snapshot({...meta,turns:page.turns},this.hostId);
             if(page.messages.some(m=>m.images?.some(i=>i.id===c.image_id)))break;
             cursor=page.next_cursor;if(!cursor)break;

@@ -22,13 +22,16 @@ async function threadPage(client,{cursor='',archived=false,search=''}={}){
  return {threads:summaries((result.data||[]).filter(t=>UUID.test(t.id)&&!String(t.source||'').toLowerCase().includes('subagent'))),
    next_cursor:typeof result.nextCursor==='string'?result.nextCursor:''};
 }
-async function historyPage(client,id,cursor=''){
+async function historyPage(client,id,cursor='',metadata){
  // Summary omits intermediate assistant messages. Full, bounded pages keep the actual
  // conversation; tool/reasoning items are projected separately and never become chat text.
  const result=await client.call('thread/turns/list',{threadId:id,limit:4,sortDirection:'desc',itemsView:'full',...(cursor?{cursor}:{})});
  const turns=(result.data||[]).slice().reverse();
  if(turns.some(t=>t.itemsView==='notLoaded'||!Array.isArray(t.items)))throw Error('HISTORY_NOT_LOADED');
- const projection=snapshot({id,turns},'');
+ let meta=metadata;
+ if(!meta)try{meta=(await client.call('thread/read',{threadId:id,includeTurns:false})).thread;}catch{}
+ if(meta&&meta.id!==id)throw Error('MISSING_THREAD');
+ const projection=snapshot({...meta,id,turns},'');
  return {messages:projection.messages,activities:projection.activities,next_cursor:typeof result.nextCursor==='string'?result.nextCursor:'',
    truncated:projection.truncated,turns};
 }
@@ -89,7 +92,7 @@ async function readSnapshot(client,id,host,readLocal,metadata){
  if(meta?.id!==id)throw Error('MISSING_THREAD');
  let result,latestNative;
  try{
-   const page=await historyPage(client,id);
+   const page=await historyPage(client,id,'',meta);
    if(page.turns.length){
      result=snapshot({...meta,turns:page.turns},host);result.history_cursor=page.next_cursor;
      latestNative=page.turns.at(-1);
@@ -151,7 +154,7 @@ async function forkThread(client,id,turnId,host,onCreated=()=>{}){
  const meta=(await client.call('thread/read',{threadId:id,includeTurns:false})).thread;
  if(meta?.id!==id)throw Error('MISSING_THREAD');
  if(meta.status?.type==='active')throw Error('BUSY');
- const tail=await historyPage(client,id),last=tail.turns.at(-1);
+ const tail=await historyPage(client,id,'',meta),last=tail.turns.at(-1);
  if(!last||last.id!==turnId||!['completed','interrupted','failed'].includes(last.status))throw Error('STALE');
  // Explicit branch only: no generation, arbitrary paths, Provider or permission overrides.
  const result=await client.call('thread/fork',{threadId:id,lastTurnId:turnId,excludeTurns:true,ephemeral:false,deferGoalContinuation:true});
