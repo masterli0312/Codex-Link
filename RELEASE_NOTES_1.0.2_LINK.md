@@ -1,6 +1,6 @@
 # Codex Link 1.0.2
 
-当前源码与本轮手机安装版：**1.0.2 / versionCode 36**，Android 8.0+，包名 `com.codex.quota.debug`。本次更新源码和文档，不创建新的 GitHub Release；公开下载仍是 1.0.1。
+源码与公开 APK：**1.0.2 / versionCode 36**，Android 8.0+，包名 `com.codex.quota.debug`。Release 提供本地检查过的 APK 与 SHA-256 校验文件，签名与本轮手机覆盖安装包一致。GitHub 构建的 1.0.1 使用不同签名，不能直接覆盖。
 
 ## 对话与同步
 

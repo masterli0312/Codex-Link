@@ -6,9 +6,9 @@
 
 在 Android 手机上查看多个 ChatGPT / Codex 账号的额度，并通过配对电脑接收任务提醒、阅读和继续 Codex 对话。支持简体中文与英文。
 
-[下载 1.0.1 APK](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.1-debug/Codex-Link-v1.0.1-debug.apk) · [发布说明](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.1-debug) · [全部版本](https://github.com/masterli0312/Codex-Link/releases)
+[下载 1.0.2 APK](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.2-debug/Codex-Link-v1.0.2-debug.apk) · [发布说明](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.2-debug) · [全部版本](https://github.com/masterli0312/Codex-Link/releases)
 
-> 项目由 Codex Usage 更名为 **Codex Link**。当前源码与本轮手机安装版本为 **1.0.2**（versionCode **36**），包含对话打开与引导修复、按需同步、附件下载和界面统一。公开下载页目前仍为 **1.0.1**；本次更新源码，不创建新的 Release。
+> 项目由 Codex Usage 更名为 **Codex Link**。当前源码与公开 APK 为 **1.0.2**（versionCode **36**），包含对话打开与引导修复、按需同步、附件下载和界面统一。代码更新同步发布 GitHub Release，提供 APK、SHA-256 校验文件和更新说明。
 
 > Android **8.0+**。已配对的用户升级后还需从 App 重新分享电脑安装包，在电脑运行 `setup.cmd` 并按提示重启 Codex。只更新 APK 不会更新电脑组件。
 
@@ -51,12 +51,12 @@
 
 ## 安装与升级
 
-1. 下载 [Codex-Link-v1.0.1-debug.apk](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.1-debug/Codex-Link-v1.0.1-debug.apk)。
+1. 下载 [Codex-Link-v1.0.2-debug.apk](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.2-debug/Codex-Link-v1.0.2-debug.apk)。
 2. 在 Android 8.0 或更新系统打开 APK，按系统提示允许安装。
 3. 首次打开添加自己的账号；需要提醒时允许通知和后台运行。
 4. 已使用电脑同步的用户：更新手机后，重新分享电脑安装 ZIP，在原电脑运行 `setup.cmd`，按安装器提示重启 Codex。
 
-公开下载的 1.0.1 包名为 `com.codex.quota.debug`，内部版本号 **35**；当前源码构建为 **1.0.2 / 36**。覆盖升级需要相同包名与签名。**1.0.1 的 GitHub 构建与 1.0.0 公开 APK 签名不同，不能直接覆盖。保留数据升级需要原签名密钥构建；卸载会清除手机本地账号、配对和设置。** 本轮本地 1.0.2 已成功覆盖安装，但这不代表任意来源的 APK 签名都相同。
+公开下载的 1.0.2 包名为 `com.codex.quota.debug`，内部版本号 **36**。本次 Release 使用经过本地构建检查的 APK，签名与本轮手机覆盖安装包一致。覆盖升级需要相同包名与签名。**1.0.1 的 GitHub 构建与本地签名不同，不能直接覆盖。保留数据升级需要原签名密钥构建；卸载会清除手机本地账号、配对和设置。** 发布说明包含签名证书 SHA-256，便于核对。
 
 发布页同时提供 SHA256 校验文件。此版本不是正式签名生产包。
 
@@ -148,7 +148,7 @@ Android 13+ 需要通知权限；声音和震动由系统通知渠道管理。�
 
 推送前检查：360 项 Android 单元测试、200 项 Node.js 电脑组件测试，以及 Windows 安装器与并发配置写入检查通过；Debug 构建与 Android lint 通过（无错误，292 项警告）。
 
-[1.0.2 更新说明](RELEASE_NOTES_1.0.2_LINK.md) · [界面及验证记录](docs/ui-1.0.2.md)。本次只推送源码与文档，公开 APK 下载仍为 1.0.1。
+[1.0.2 更新说明](RELEASE_NOTES_1.0.2_LINK.md) · [界面及验证记录](docs/ui-1.0.2.md) · [1.0.2 Release](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.2-debug)。
 
 ## 1.0.1 更新摘要
 
@@ -195,7 +195,7 @@ powershell -NoProfile -File tools/task-notifications/install-notify.test.ps1
 pwsh -NoProfile -File tools/task-notifications/settings-file.test.ps1
 ```
 
-GitHub Actions 对 `main` 和 Pull Request 执行 Android 与 Windows 检查。`v*` 标签另触发正式签名构建，需配置签名 Secrets；`apk-*-debug` 标签在 Android 与 Windows 检查通过后自动发布测试 APK 和 SHA256，核对标签、内部版本和有效签名；当前标签为 `apk-1.0.1-debug`。正式签名流程尚未验证。
+GitHub Actions 对 `main` 和 Pull Request 执行 Android 与 Windows 检查。每次上传应用更新需递增版本并同步发布 Release、APK、SHA-256 与更新说明，详见 [发布约定](AGENTS.md)。`v*` 标签另触发正式签名构建，需配置签名 Secrets；`apk-*-debug` 标签在检查通过后可自动发布测试 APK，但 CI 默认调试签名与本地签名可能不同。本次 `apk-1.0.2-debug` 发布本地检查过的 APK，以沿用手机当前签名。正式签名流程尚未验证。
 
 正式构建可在被 Git 忽略的 `signing.properties` 中配置 `storeFile`、`storePassword`、`keyAlias`、`keyPassword`，或使用 `ANDROID_KEYSTORE_FILE`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD` 环境变量，运行 `assembleRelease`。不要提交密钥库或口令。
 
@@ -230,7 +230,7 @@ The app supports two-way text conversations, available models and reasoning leve
 
 **Task notifications do not inherently require a VPN or Google Play Services, including in mainland China, provided the notification service is reachable.** Authentication, quota, automatic activation and Cloud require access to OpenAI. Activation runs on the phone and cannot proceed while OpenAI is unreachable; it can continue when access is restored. Android background restrictions and network conditions can delay delivery.
 
-Current source is **1.0.2 / versionCode 36**; the public [debug APK download](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.1-debug) remains **1.0.1 / 35**. This update publishes source and documentation without creating a new Release. In-place upgrades require matching package and signing certificates; the public 1.0.0 and GitHub-built 1.0.1 use different certificates.
+Current source and the public [debug APK download](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.2-debug) are **1.0.2 / versionCode 36**. App updates include a GitHub Release with the APK, SHA-256 checksum and release notes. This release uses the locally checked APK and the same signing certificate as the current phone installation. In-place upgrades require matching package and signing certificates; GitHub-built 1.0.1 uses a different certificate.
 
 Version 1.0.2 adds selective computer conversation sync, swipe actions, remote question dialogs, generated-file downloads, PDF preview and up to 10 draft attachments. Steer receipts bypass conversation snapshot transfer; real latency still depends on connectivity. Notification cards use the launcher artwork; OEMs such as vivo may need one phone reboot to discard cached old icons.
 
