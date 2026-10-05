@@ -102,7 +102,7 @@ function createHealth(directory,clock=Date.now){
   const errors=new Set(['','NETWORK','TIMEOUT','HTTP','RATE_LIMIT','DAILY_LIMIT','OVERSIZE']);
   const kinds=new Set(['','send','create','stop','approve','answer_input','status','models','threads','read','history','activities','rename','archive','unarchive','queue','steer','cancel_queue','presence',
     'fork','forked','accepted','running','approval','input_required','completed','interrupted','failed','unknown','snapshot','managed','queued','steered','cancelled',
-    'goal_read','goal_start','goal_pause','goal_resume','goal_clear','goal','session_info','skills','image','file','thread_activity']);
+    'goal_read','goal_start','goal_pause','goal_resume','goal_clear','goal','session_info','skills','image','file','thread_activity','compact','compacting','compacted']);
   return {snapshot:()=>({...state}),update(patch){
     for(const [key,value] of Object.entries(patch)){
       if(counters.has(key)&&Number.isSafeInteger(value)&&value>=0)state[key]=value;

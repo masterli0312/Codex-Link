@@ -131,7 +131,7 @@ object RemoteProtocol {
         val plain = TaskContentCipher.decrypt(wire["encrypted"]!!.jsonPrimitive.content, key, "CodexUsage:2.0:event:$id") ?: return null
         json.decodeFromString<RemoteEvent>(plain).also {
             require(it.id == id && uuid.matches(it.request_id) && it.seq > 0 && it.at > 0 &&
-                it.status in setOf("accepted", "running", "approval", "input_required", "completed", "interrupted", "failed", "unknown", "models", "threads", "snapshot", "history", "activities", "managed", "forked", "queued", "steered", "cancelled", "presence", "goal", "session_info", "skills", "image", "file", "thread_activity"))
+                it.status in setOf("accepted", "running", "approval", "input_required", "completed", "interrupted", "failed", "unknown", "models", "threads", "snapshot", "history", "activities", "managed", "forked", "queued", "steered", "cancelled", "presence", "goal", "session_info", "skills", "image", "file", "thread_activity", "compacting", "compacted"))
             require(it.status != "thread_activity" || uuid.matches(it.host_id) && uuid.matches(it.thread_id) &&
                 it.request_id == it.thread_id && it.conversation_id == TaskInbox.hash(it.thread_id) &&
                 it.turn_id.length in 1..128 && it.activity_running != null && !(it.activity_running && it.activity_completed))

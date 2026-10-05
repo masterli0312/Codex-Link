@@ -76,7 +76,7 @@ function validInputAnswers(input,answers){
 }
 function validateCommand(c,host,now=Date.now()){
   return !!(c&&typeof c==='object'&&!Array.isArray(c)&&isUuid(c.id)&&c.host_id===host&&isUuid(c.thread_id)&&c.conversation_id===hash(c.thread_id)&&
-    ['send','create','stop','approve','answer_input','status','models','threads','read','history','activities','rename','archive','unarchive','fork','queue','steer','cancel_queue','presence','session_info','skills','image','file',...goals.ACTIONS].includes(c.action)&&goals.validGoalCommand(c)&&Number.isSafeInteger(c.issued_at)&&now-c.issued_at<=120000&&c.issued_at-now<=15000&&
+    ['compact','send','create','stop','approve','answer_input','status','models','threads','read','history','activities','rename','archive','unarchive','fork','queue','steer','cancel_queue','presence','session_info','skills','image','file',...goals.ACTIONS].includes(c.action)&&goals.validGoalCommand(c)&&Number.isSafeInteger(c.issued_at)&&now-c.issued_at<=120000&&c.issued_at-now<=15000&&
     (!['send','create','queue','steer'].includes(c.action)||(typeof c.text==='string'&&c.text.trim()&&Buffer.byteLength(c.text)<=16384&&typeof c.baseline_turn==='string'&&c.baseline_turn.length<=128))&&
     (!['queue','steer'].includes(c.action)||typeof c.expected_turn_id==='string'&&c.expected_turn_id.length>0&&c.expected_turn_id.length<=128)&&
     (c.action!=='cancel_queue'||isUuid(c.queue_id))&&
@@ -99,7 +99,7 @@ function validateCommand(c,host,now=Date.now()){
     (c.archived===undefined||typeof c.archived==='boolean')&&
     (c.search===undefined||typeof c.search==='string'&&Buffer.byteLength(c.search)<=240&&!/[\r\n\0]/.test(c.search))&&
     ['model','effort'].every(k=>c[k]===undefined||(typeof c[k]==='string'&&c[k].length<=128&&!/[\r\n\0]/.test(c[k])))&&
-    (['send','create','models','threads','read','history','activities','rename','archive','unarchive','fork','presence','session_info','skills','image','file',...goals.ACTIONS].includes(c.action)||isUuid(c.target_id))&&(c.action!=='approve'||(isUuid(c.approval_id)&&typeof c.allow==='boolean'&&typeof c.expected_turn_id==='string'&&c.expected_turn_id.length>0&&c.expected_turn_id.length<=128)));
+    (['compact','send','create','models','threads','read','history','activities','rename','archive','unarchive','fork','presence','session_info','skills','image','file',...goals.ACTIONS].includes(c.action)||isUuid(c.target_id))&&(c.action!=='approve'||(isUuid(c.approval_id)&&typeof c.allow==='boolean'&&typeof c.expected_turn_id==='string'&&c.expected_turn_id.length>0&&c.expected_turn_id.length<=128)));
 }
 function normalizeModels(models){
   const seen=new Set();return models.filter(m=>!m.hidden&&typeof m.model==='string'&&m.model.length<=128&&
@@ -168,7 +168,7 @@ class RemoteController{
     try{this.journal=JSON.parse(fs.readFileSync(this.file,'utf8'));}catch{}
     this.seq=Math.max(this.seq,...Object.values(this.journal).map(r=>Number.isSafeInteger(r.seq)?r.seq:0));
     for(const r of Object.values(this.journal)){
-      if(['accepted','running','approval','input_required'].includes(r.status))r.status='unknown';
+      if(['accepted','running','approval','input_required','compacting'].includes(r.status))r.status='unknown';
       if(r.status==='queued'){r.status='cancelled';r.error='QUEUE_INTERRUPTED';}
     }
   }
@@ -428,13 +428,69 @@ class RemoteController{
       }catch{}finally{client?.close();}
     }
     if(old.status==='unknown'&&old.goal_task)state={...state,error:'GOAL_UNCONFIRMED'};
-    if(old.status==='unknown'&&!old.goal_task&&old.turn_id&&this.recover){
+    if(old.status==='unknown'&&old.action==='compact')state={...state,error:'COMPACTION_UNCONFIRMED'};
+    if(old.status==='unknown'&&!old.goal_task&&old.action!=='compact'&&old.turn_id&&this.recover){
       try{const recovered=this.recover(old.actual_thread_id||c.thread_id,old.turn_id);if(recovered){old.status='completed';state={...state,reply:recovered.reply,turn_id:old.turn_id,...(old.actual_thread_id?{snapshot:recovered}:{})};}}catch{}
     }
     await this.update({...c,id},old.status,{...state,stream_reset:true,id:crypto.randomUUID(),seq:++this.seq,at:Date.now(),status:old.status,...(old.error?{error:old.error}:{})});
   }
+  async compact(c){
+    if(this.journal[c.id]){await this.replay(c,c.id);return;}
+    if(this.compacting){await this.update(c,'failed',{error:'BUSY'});return;}
+    const slot={client:null,cancel:null};this.compacting=slot;
+    let attempted=false,timer,settle,finished=false,turn='',compactionSeen=false;
+    // Keep the shared subscriber alive until native completion, never infer completion
+    // from the empty start response or run a summarization prompt instead.
+    const completion=new Promise(resolve=>{settle=resolve;});
+    const finish=value=>{if(!finished){finished=true;settle(value);}};
+    slot.cancel=()=>finish('COMPACTION_UNCONFIRMED');
+    try{
+      const client=slot.client=this.clientFactory();
+      if(!client.supportsLiveWatch)throw Error('COMPACTION_UNAVAILABLE');
+      client.setHandlers((method,p)=>{
+        if(method==='bridge/disconnected'){finish('COMPACTION_UNCONFIRMED');return;}
+        if(!attempted||p.threadId!==c.thread_id||p.turnId===c.baseline_turn||p.turn?.id===c.baseline_turn)return;
+        if(method==='turn/started'&&!turn)turn=p.turn?.id||'';
+        if(['item/started','item/completed'].includes(method)&&p.item?.type==='contextCompaction'){
+          if(turn&&turn!==p.turnId)return;
+          turn=p.turnId;compactionSeen=true;
+        }
+        if(method==='thread/compacted'&&p.turnId&&(!turn||turn===p.turnId))finish(null);
+        if(method==='turn/completed'&&turn&&p.turn?.id===turn){
+          finish(p.turn.status==='completed'&&compactionSeen?null:'COMPACTION_FAILED');
+        }
+      },id=>client.reject(id));
+      await client.connect();
+      const inspect=async()=>{
+        const meta=(await client.call('thread/read',{threadId:c.thread_id,includeTurns:false})).thread;
+        if(meta?.id!==c.thread_id)throw Error('INVALID_THREAD');
+        if(meta.status?.type==='active')throw Error('BUSY');
+        const last=(await client.call('thread/turns/list',{threadId:c.thread_id,limit:1,sortDirection:'desc',itemsView:'summary'})).data?.[0];
+        if(last?.status==='inProgress')throw Error('BUSY');
+      };
+      await inspect();
+      await client.call('thread/resume',{threadId:c.thread_id,excludeTurns:true});
+      await inspect();
+      this.journal[c.id]={status:'unknown',thread_id:c.thread_id,action:'compact',error:'COMPACTION_UNCONFIRMED'};this.persist();
+      await this.update(c,'compacting');
+      attempted=true;
+      timer=setTimeout(()=>finish('COMPACTION_UNCONFIRMED'),180000);
+      await client.call('thread/compact/start',{threadId:c.thread_id});
+      const error=await completion;
+      delete this.journal[c.id].error;
+      await this.update(c,error==='COMPACTION_UNCONFIRMED'?'unknown':error?'failed':'compacted',error?{error}:{});
+    }catch(e){
+      const error=e.message==='BUSY'?'BUSY':e.message==='COMPACTION_UNAVAILABLE'||e.rpcCode===-32601?'COMPACTION_UNAVAILABLE':
+        !attempted||e.rpcCode?'COMPACTION_FAILED':'COMPACTION_UNCONFIRMED';
+      if(this.journal[c.id])delete this.journal[c.id].error;
+      await this.update(c,error==='COMPACTION_UNCONFIRMED'?'unknown':'failed',{error});
+    }finally{
+      clearTimeout(timer);slot.client?.close();if(this.compacting===slot)this.compacting=null;
+    }
+  }
   async handle(c){
     if(!validateCommand(c,this.hostId))return;
+    if(c.action==='compact'){await this.compact(c);return;}
     if(c.action==='answer_input'&&(await this.answerActiveDesktopInput(c)||await this.answerWatchInput(c)))return;
     if(goals.ACTIONS.includes(c.action)){await goals.handleGoal(this,c);return;}
     if(c.action==='file'){
@@ -879,7 +935,7 @@ class RemoteController{
       a.client.close();if(this.active===a)this.active=null;
     }
   }
-  close(){this.stopWatching();if(this.active){
+  close(){this.compacting?.cancel();this.compacting?.client?.close();this.stopWatching();if(this.active){
     clearInterval(this.active.questionTimer);
     for(const q of this.active.queue||[])if(this.journal[q.id])Object.assign(this.journal[q.id],{status:'cancelled',error:'QUEUE_INTERRUPTED'});
     this.persist();clearTimeout(this.active.timer);this.active.client?.close();this.active=null;

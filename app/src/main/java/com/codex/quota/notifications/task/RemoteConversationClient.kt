@@ -373,6 +373,41 @@ class RemoteConversationClient(private val context: Context) {
         }
     }
 
+    suspend fun compactContext(recordId: String) = withContext(Dispatchers.IO) {
+        userAction(recordId) {
+            val record = requireNotNull(inbox.read(recordId)); pairing(record)
+            require(!record.archived && !record.snapshot.running && !ConversationIndex.hasPendingTurn(record)) { "BUSY" }
+            val ref = requireNotNull(reference(record))
+            require(RemoteProtocol.validRef(ref, record.snapshot.conversation_id))
+            val computer = requireNotNull(computers.find(record))
+            val command = RemoteCommand(java.util.UUID.randomUUID().toString(), "compact", ref.host_id, ref.thread_id,
+                record.snapshot.conversation_id, ref.baseline_turn, System.currentTimeMillis())
+            withTimeout(195_000) {
+                coroutineScope {
+                    val response = async(start = CoroutineStart.UNDISPATCHED) {
+                        ConversationCompactionResponse.await(command,
+                            lines(RemoteProtocol.topic(computer.endpoint, computer.key, computer.hostId, "events") +
+                                "/json?since=" + (command.issued_at / 1000 - 1)).mapNotNull { line ->
+                                val envelope = runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull() ?: return@mapNotNull null
+                                if (envelope["event"]?.jsonPrimitive?.content != "message") return@mapNotNull null
+                                val wire = runCatching { Json.parseToJsonElement(envelope["message"]!!.jsonPrimitive.content).jsonObject }.getOrNull() ?: return@mapNotNull null
+                                var result = RemoteProtocol.event(wire, computer.key) ?: return@mapNotNull null
+                                if (!ConversationCompactionResponse.matches(command, result)) return@mapNotNull null
+                                if (result.partial) downloadEvent(computer.endpoint, envelope, wire, computer.key)?.let { result = it }
+                                result
+                            })
+                    }
+                    // Publish once. An uncertain result must never silently repeat compression.
+                    publishCommand(recordId, command)
+                    response.await()
+                }
+            }
+            require(computers.find(record)?.key == computer.key)
+        }
+        runCatching { session(recordId) }
+        runCatching { ensureConversationWatch(recordId, force = true) }
+    }
+
     private suspend fun ensureConversationWatch(recordId: String, force: Boolean = false) {
         val record = inbox.read(recordId) ?: return
         if (record.libraryAnchor || record.archived) return

@@ -1,4 +1,11 @@
 <resources>
+    <string name="conversation_compact">压缩上下文</string>
+    <string name="conversation_compacting">正在压缩上下文…</string>
+    <string name="conversation_compacted">上下文已压缩</string>
+    <string name="conversation_compact_busy">请等待当前回复结束后再压缩。</string>
+    <string name="conversation_compact_unavailable">请更新电脑组件，并使用共享连接压缩上下文。</string>
+    <string name="conversation_compact_failed">上下文压缩失败，请检查电脑连接。</string>
+    <string name="conversation_compact_unconfirmed">尚未确认压缩结果，请在电脑上确认后再重试。</string>
     <string name="composer_plan_label">计划</string>
     <string name="composer_goal_label">目标</string>
     <string name="conversation_activity_running">正在处理</string>

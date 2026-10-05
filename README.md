@@ -6,9 +6,9 @@
 
 在 Android 手机上查看多个 ChatGPT / Codex 账号的额度，并通过配对电脑接收任务提醒、阅读和继续 Codex 对话。支持简体中文与英文。
 
-[下载 1.0.4 APK](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.4-debug/Codex-Link-v1.0.4-debug.apk) · [发布说明](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.4-debug) · [全部版本](https://github.com/masterli0312/Codex-Link/releases)
+[下载 1.0.5 APK](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.5-debug/Codex-Link-v1.0.5-debug.apk) · [发布说明](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.5-debug) · [全部版本](https://github.com/masterli0312/Codex-Link/releases)
 
-> 项目由 Codex Usage 更名为 **Codex Link**。当前源码与公开 APK 为 **1.0.4**（versionCode **38**），修复配对读取失败时电脑条目消失的处理逻辑，新增从原安装 ZIP 恢复配对，并优化远程问题弹窗及中文加粗显示。代码更新同步发布 GitHub Release，提供 APK、SHA-256 校验文件和更新说明。
+> 项目由 Codex Usage 更名为 **Codex Link**。当前源码与公开 APK 为 **1.0.5**（versionCode **39**），新增电脑对话的主动上下文压缩，保留配对恢复、远程问题弹窗及中文加粗优化。代码更新同步发布 GitHub Release，提供 APK、SHA-256 校验文件和更新说明。
 
 > Android **8.0+**。已配对的用户升级后还需从 App 重新分享电脑安装包，在电脑运行 `setup.cmd` 并按提示重启 Codex。只更新 APK 不会更新电脑组件。
 
@@ -51,12 +51,12 @@
 
 ## 安装与升级
 
-1. 下载 [Codex-Link-v1.0.4-debug.apk](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.4-debug/Codex-Link-v1.0.4-debug.apk)。
+1. 下载 [Codex-Link-v1.0.5-debug.apk](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.5-debug/Codex-Link-v1.0.5-debug.apk)。
 2. 在 Android 8.0 或更新系统打开 APK，按系统提示允许安装。
 3. 首次打开添加自己的账号；需要提醒时允许通知和后台运行。
 4. 已使用电脑同步的用户：更新手机后，重新分享电脑安装 ZIP，在原电脑运行 `setup.cmd`，按安装器提示重启 Codex。
 
-公开下载的 1.0.4 包名为 `com.codex.quota.debug`，内部版本号 **38**。本次 Release 使用经过本地构建检查的 APK，沿用本地 1.0.3 签名。覆盖升级需要相同包名与签名。**1.0.1 的 GitHub 构建与本地签名不同，不能直接覆盖。保留数据升级需要原签名密钥构建；卸载会清除手机本地账号、配对和设置。** 发布说明包含签名证书 SHA-256，便于核对。
+公开下载的 1.0.5 包名为 `com.codex.quota.debug`，内部版本号 **39**。本次 Release 使用经过本地构建检查的 APK，沿用本地 1.0.3 签名。覆盖升级需要相同包名与签名。**1.0.1 的 GitHub 构建与本地签名不同，不能直接覆盖。保留数据升级需要原签名密钥构建；卸载会清除手机本地账号、配对和设置。** 发布说明包含签名证书 SHA-256，便于核对。
 
 发布页同时提供 SHA256 校验文件。此版本不是正式签名生产包。
 
@@ -82,6 +82,10 @@
 
 **同一个桌面对话的双端续聊需启用共享连接并从配置后的入口启动 Codex。** 兼容性取决于 Codex 桌面版本；启用与停用见 [详细使用说明](docs/task-notifications.md#双端共享连接)。独立连接模式不能写入被桌面独占的线程。同一对话可在两端使用，但一轮任务只启动一次；执行中使用补充要求或排队消息。
 
+### 主动压缩上下文
+
+在电脑对话右上角 **三个点 → 压缩上下文** 操作。当前回复结束后可用，压缩时显示状态，原生任务完成后刷新上下文数据。需要更新电脑组件并使用共享连接；Cloud 暂未提供此操作。结果无法确认时先在电脑检查，不自动重复压缩。
+
 ### 配对读取异常与恢复
 
 - 暂时无法读取或解密配对文件时，保留当前进程已验证的电脑条目并自动重试，阻止添加电脑和状态更新覆盖异常文件；没有成功读取过的记录会提示读取异常。
@@ -99,7 +103,7 @@
 - 左滑对话露出置顶、重命名和归档操作。模型列表来自电脑实际返回的目录；插件管理可选择输入菜单中显示的插件。
 - 电脑提出可远程回答的问题时，手机显示选项弹窗；答复只提交给匹配的请求和当前轮次，不自动选择权限。
 - 电脑生成的文件可通过回复中的文件卡片下载；PDF 在 App 内预览，Word/PPT 等使用系统打开，需要手机安装相应查看应用。
-- 1.0.4 支持回复中明确指向桌面等输出目录的文档链接，并修复较早消息和长对话的文件识别。**需同时更新电脑组件**；文件必须仍在原电脑上，仅升级手机无法补齐电脑端漏传的引用。
+- 1.0.3 起支持回复中明确指向桌面等输出目录的文档链接，并修复较早消息和长对话的文件识别。**需同时更新电脑组件**；文件必须仍在原电脑上，仅升级手机无法补齐电脑端漏传的引用。
 - 语音转文字进入可编辑草稿，由用户确认发送。系统服务不可用时，可下载约 **240 MB 的 SenseVoice INT8 离线模型**；模型不包含在 APK 中。离线路径不保存或上传录音，准确率仍受发音与环境影响。
 - 回复生成时隐藏复制图标，完成后显示；上下文与额度状态优先使用当前对话缓存，再后台更新。
 - 置顶只影响当前手机；重命名和归档通过电脑接口执行。历史与大图受缓存和传输上限约束，不保证完整保留任意长度对话。
@@ -144,14 +148,24 @@ Android 13+ 需要通知权限；声音和震动由系统通知渠道管理。�
 
 详细边界和卸载方法见 [电脑连接指南](docs/task-notifications.md)。
 
-## 1.0.4 更新摘要（当前源码）
+## 1.0.5 更新摘要（当前源码）
+
+- 电脑对话的三个点菜单增加「压缩上下文」，使用原生接口，显示执行状态并在完成后刷新上下文数据。
+- 电脑重新检查当前回复是否结束；结果无法确认时不自动重复压缩，原有对话监听保持独立。
+- 保留 1.0.4 的配对读取保护、配对恢复、远程问题弹窗和中文加粗优化。
+
+[1.0.5 更新说明](RELEASE_NOTES_1.0.5_LINK.md)。压缩功能需要同步更新电脑组件。
+
+发布检查：369 项 Android 单元测试、215 项 Node 测试通过，Debug APK 构建与 lint 通过。尚未在真实手机上操作主动压缩；接口回归使用独立 fixture。
+
+## 1.0.3 更新摘要
 
 - 修复工作目录外的 PPTX、DOCX、PDF 被过滤，恢复文档卡片、查看和下载入口。
 - 历史分页带上对应线程的工作目录；长日志截取从日志头恢复目录，电脑组件重启后可从原生历史重新识别文件。
 - 回复正文显式启用链接点击。文件传输仍校验对话身份、长度与完整性，保留敏感目录和符号链接限制。
 - 已成功读取实际对话中的 4 个文档（PPTX、DOCX、PDF）；手机查看应用的实际行为仍需安装后确认。
 
-[1.0.4 更新说明](RELEASE_NOTES_1.0.4_LINK.md)。本次必须更新手机和电脑组件。
+[1.0.3 更新说明](RELEASE_NOTES_1.0.3_LINK.md)。该次更新需要更新手机和电脑组件。
 
 发布前 360 项 Android 单元测试、204 项 Node 测试通过，构建与 lint 通过；已核对实际文件读取及 APK 内组件，手机查看应用未实测。
 
@@ -214,7 +228,7 @@ powershell -NoProfile -File tools/task-notifications/install-notify.test.ps1
 pwsh -NoProfile -File tools/task-notifications/settings-file.test.ps1
 ```
 
-GitHub Actions 对 `main` 和 Pull Request 执行 Android 与 Windows 检查。每次上传应用更新需递增版本并同步发布 Release、APK、SHA-256 与更新说明，详见 [发布约定](AGENTS.md)。`v*` 标签另触发正式签名构建，需配置签名 Secrets；`apk-*-debug` 标签在检查通过后可自动发布测试 APK，但 CI 默认调试签名与本地签名可能不同。本次 `apk-1.0.4-debug` 发布本地检查过的 APK，沿用本地 1.0.3 签名。正式签名流程尚未验证。
+GitHub Actions 对 `main` 和 Pull Request 执行 Android 与 Windows 检查。每次上传应用更新需递增版本并同步发布 Release、APK、SHA-256 与更新说明，详见 [发布约定](AGENTS.md)。`v*` 标签另触发正式签名构建，需配置签名 Secrets；`apk-*-debug` 标签在检查通过后可自动发布测试 APK，但 CI 默认调试签名与本地签名可能不同。本次 `apk-1.0.5-debug` 发布本地检查过的 APK，沿用本地 1.0.3 签名。正式签名流程尚未验证。
 
 正式构建可在被 Git 忽略的 `signing.properties` 中配置 `storeFile`、`storePassword`、`keyAlias`、`keyPassword`，或使用 `ANDROID_KEYSTORE_FILE`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD` 环境变量，运行 `assembleRelease`。不要提交密钥库或口令。
 
@@ -249,7 +263,7 @@ The app supports two-way text conversations, available models and reasoning leve
 
 **Task notifications do not inherently require a VPN or Google Play Services, including in mainland China, provided the notification service is reachable.** Authentication, quota, automatic activation and Cloud require access to OpenAI. Activation runs on the phone and cannot proceed while OpenAI is unreachable; it can continue when access is restored. Android background restrictions and network conditions can delay delivery.
 
-Current source and the public [debug APK download](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.4-debug) are **1.0.4 / versionCode 37**. Version 1.0.4 fixes missing document references in external export folders, paged history and bounded local logs, and enables reply link clicks. Update both the phone and computer component. PDF has a built-in preview; DOCX/PPTX require a compatible viewer on the phone. App updates include an APK, SHA-256 checksum and release notes. This release retains the local 1.0.2 certificate; GitHub-built 1.0.1 uses a different certificate.
+Current source and the public [debug APK download](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.5-debug) are **1.0.5 / versionCode 39**. Version 1.0.5 adds native context compaction to the computer conversation overflow menu, with completion tracking and no automatic replay of uncertain operations. Update both the phone and computer component; compaction requires a shared connection and is not yet available for Cloud. Pairing recovery, question dialogs, document downloads and Chinese bold styling remain supported. PDF has a built-in preview; DOCX/PPTX require a compatible viewer. App updates include an APK, SHA-256 checksum and release notes. This release retains the 1.0.4 certificate; GitHub-built 1.0.1 uses a different certificate.
 
 Version 1.0.2 adds selective computer conversation sync, swipe actions, remote question dialogs, generated-file downloads, PDF preview and up to 10 draft attachments. Steer receipts bypass conversation snapshot transfer; real latency still depends on connectivity. Notification cards use the launcher artwork; OEMs such as vivo may need one phone reboot to discard cached old icons.
 

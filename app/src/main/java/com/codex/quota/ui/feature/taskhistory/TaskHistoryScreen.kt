@@ -427,6 +427,9 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
     var requestedForkId by remember(id) { mutableStateOf<String?>(null) }
     var renameText by remember { mutableStateOf("") }
     var operationError by remember { mutableStateOf(false) }
+    var compactPending by remember(id) { mutableStateOf(false) }
+    var compactMessage by remember(id) { mutableIntStateOf(0) }
+    var compactError by remember(id) { mutableStateOf(false) }
     var downloading by remember { mutableStateOf(false) }
     var downloadError by remember { mutableStateOf(false) }
     val clock = rememberConversationClock()
@@ -627,13 +630,33 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
             Box {
                 IconButton(onClick = { managementMenu = true }) { Icon(Icons.Outlined.MoreVert, stringResource(R.string.conversation_actions)) }
                 DropdownMenu(managementMenu, { managementMenu = false }, shape = RoundedCornerShape(24.dp), modifier = Modifier.widthIn(min = 200.dp, max = 260.dp), containerColor = MaterialTheme.colorScheme.surfaceContainerLowest) {
+                    DropdownMenuItem(text = { Text(stringResource(if (compactPending) R.string.conversation_compacting else R.string.conversation_compact)) },
+                        leadingIcon = { Icon(Icons.Outlined.Compress, null) },
+                        enabled = remoteAvailable && !compactPending && !operationPending && current?.snapshot?.running != true && current?.let(ConversationIndex::hasPendingTurn) != true,
+                        onClick = {
+                            managementMenu = false; compactPending = true; compactError = false; compactMessage = 0
+                            scope.launch {
+                                try { client.compactContext(activeId); compactMessage = R.string.conversation_compacted }
+                                catch (_: kotlinx.coroutines.TimeoutCancellationException) { compactError = true; compactMessage = R.string.conversation_compact_unconfirmed }
+                                catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                                catch (e: Exception) {
+                                    compactError = true
+                                    compactMessage = when (e.message) {
+                                        "BUSY", "REMOTE_BUSY" -> R.string.conversation_compact_busy
+                                        "COMPACTION_UNAVAILABLE" -> R.string.conversation_compact_unavailable
+                                        "COMPACTION_UNCONFIRMED" -> R.string.conversation_compact_unconfirmed
+                                        else -> R.string.conversation_compact_failed
+                                    }
+                                } finally { compactPending = false }
+                            }
+                        })
                     DropdownMenuItem(text = { Text(stringResource(if (current?.pinned == true) R.string.conversation_menu_unpin else R.string.conversation_menu_pin)) }, leadingIcon = { Icon(Icons.Outlined.PushPin, null) },
                         onClick = { managementMenu = false; scope.launch { withContext(Dispatchers.IO) { inbox.setPinned(activeId, current?.pinned != true) } } })
                     DropdownMenuItem(text = { Text(stringResource(R.string.conversation_menu_rename)) }, leadingIcon = { Icon(Icons.Outlined.Edit, null) },
-                        enabled = canManage && !operationPending && current?.let(ConversationIndex::hasPendingTurn) != true,
+                        enabled = canManage && !compactPending && !operationPending && current?.let(ConversationIndex::hasPendingTurn) != true,
                         onClick = { managementMenu = false; renameText = current?.snapshot?.title.orEmpty(); renameDialog = true })
                     DropdownMenuItem(text = { Text(stringResource(if (current?.archived == true) R.string.conversation_restore else R.string.conversation_menu_archive), color = MaterialTheme.colorScheme.error) },
-                        leadingIcon = { Icon(Icons.Outlined.Archive, null, tint = MaterialTheme.colorScheme.error) }, enabled = canManage && !operationPending && current?.let(ConversationIndex::hasPendingTurn) != true,
+                        leadingIcon = { Icon(Icons.Outlined.Archive, null, tint = MaterialTheme.colorScheme.error) }, enabled = canManage && !compactPending && !operationPending && current?.let(ConversationIndex::hasPendingTurn) != true,
                         onClick = { managementMenu = false; if (current?.archived == true) query("unarchive") else archiveDialog = true })
                 }
             }
@@ -648,6 +671,9 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
                 RemoteInputPrompt(input) { answers -> client.answerInput(activeId, input.id, answers, library = ownInput == null) }
             }
             if (current == null && loaded) Text(stringResource(R.string.task_history_missing), Modifier.padding(24.dp))
+            if (compactPending || compactMessage != 0) Text(stringResource(if (compactPending) R.string.conversation_compacting else compactMessage),
+                Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall,
+                color = if (compactError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
             if (operationError || result?.error?.isNotBlank() == true) Text(stringResource(R.string.conversation_sync_failed), Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             Box(Modifier.weight(1f)) {
                 if (loaded && current != null && !contentReady && clock - openedAt >= 500) {

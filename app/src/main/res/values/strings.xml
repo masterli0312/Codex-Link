@@ -1,4 +1,11 @@
 <resources>
+    <string name="conversation_compact">Compact context</string>
+    <string name="conversation_compacting">Compacting context…</string>
+    <string name="conversation_compacted">Context compacted</string>
+    <string name="conversation_compact_busy">Wait for the current reply to finish before compacting.</string>
+    <string name="conversation_compact_unavailable">Update the computer component to use context compaction with a shared connection.</string>
+    <string name="conversation_compact_failed">Context compaction failed. Check the computer connection.</string>
+    <string name="conversation_compact_unconfirmed">Compaction result could not be confirmed. Check the computer before trying again.</string>
     <string name="composer_plan_label">Plan</string>
     <string name="composer_goal_label">Goal</string>
     <string name="conversation_activity_running">In progress</string>
