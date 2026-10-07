@@ -4,7 +4,10 @@ sealed class Screen(val route: String) {
     data object Dashboard : Screen("dashboard")
     data object Accounts : Screen("accounts")
     data object Settings : Screen("settings")
-    data object AddAccount : Screen("add_account")
+    data object AddAccount : Screen("add_account?reauthAccountId={reauthAccountId}") {
+        fun createRoute(accountId: String? = null): String = if (accountId.isNullOrBlank()) "add_account"
+            else "add_account?reauthAccountId=${android.net.Uri.encode(accountId)}"
+    }
     data object Onboarding : Screen("onboarding")
     data object About : Screen("about")
     data object TaskHistory : Screen("task_history")

@@ -6,9 +6,9 @@
 
 在 Android 手机上查看多个 ChatGPT / Codex 账号的额度，并通过配对电脑接收任务提醒、阅读和继续 Codex 对话。支持简体中文与英文。
 
-[下载 1.0.5 APK](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.5-debug/Codex-Link-v1.0.5-debug.apk) · [发布说明](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.5-debug) · [全部版本](https://github.com/masterli0312/Codex-Link/releases)
+[下载 1.0.6 APK](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.6-debug/Codex-Link-v1.0.6-debug.apk) · [发布说明](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.6-debug) · [全部版本](https://github.com/masterli0312/Codex-Link/releases)
 
-> 项目由 Codex Usage 更名为 **Codex Link**。当前源码与公开 APK 为 **1.0.5**（versionCode **39**），新增电脑对话的主动上下文压缩，保留配对恢复、远程问题弹窗及中文加粗优化。代码更新同步发布 GitHub Release，提供 APK、SHA-256 校验文件和更新说明。
+> 项目由 Codex Usage 更名为 **Codex Link**。当前源码与公开 APK 为 **1.0.6**（versionCode **40**），修复「立即重新登录」的入口与原账号授权更新，保留主动上下文压缩等现有功能。代码更新同步发布 GitHub Release，提供 APK、SHA-256 校验文件和更新说明。
 
 > Android **8.0+**。已配对的用户升级后还需从 App 重新分享电脑安装包，在电脑运行 `setup.cmd` 并按提示重启 Codex。只更新 APK 不会更新电脑组件。
 
@@ -51,12 +51,12 @@
 
 ## 安装与升级
 
-1. 下载 [Codex-Link-v1.0.5-debug.apk](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.5-debug/Codex-Link-v1.0.5-debug.apk)。
+1. 下载 [Codex-Link-v1.0.6-debug.apk](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.6-debug/Codex-Link-v1.0.6-debug.apk)。
 2. 在 Android 8.0 或更新系统打开 APK，按系统提示允许安装。
 3. 首次打开添加自己的账号；需要提醒时允许通知和后台运行。
 4. 已使用电脑同步的用户：更新手机后，重新分享电脑安装 ZIP，在原电脑运行 `setup.cmd`，按安装器提示重启 Codex。
 
-公开下载的 1.0.5 包名为 `com.codex.quota.debug`，内部版本号 **39**。本次 Release 使用经过本地构建检查的 APK，沿用本地 1.0.3 签名。覆盖升级需要相同包名与签名。**1.0.1 的 GitHub 构建与本地签名不同，不能直接覆盖。保留数据升级需要原签名密钥构建；卸载会清除手机本地账号、配对和设置。** 发布说明包含签名证书 SHA-256，便于核对。
+公开下载的 1.0.6 包名为 `com.codex.quota.debug`，内部版本号 **40**。本次 Release 使用经过本地构建检查的 APK，沿用本地 1.0.3 签名。覆盖升级需要相同包名与签名。**1.0.1 的 GitHub 构建与本地签名不同，不能直接覆盖。保留数据升级需要原签名密钥构建；卸载会清除手机本地账号、配对和设置。** 发布说明包含签名证书 SHA-256，便于核对。
 
 发布页同时提供 SHA256 校验文件。此版本不是正式签名生产包。
 
@@ -148,7 +148,17 @@ Android 13+ 需要通知权限；声音和震动由系统通知渠道管理。�
 
 详细边界和卸载方法见 [电脑连接指南](docs/task-notifications.md)。
 
-## 1.0.5 更新摘要（当前源码）
+## 1.0.6 更新摘要（当前源码）
+
+- 概览和账号详情的「立即重新登录」直接打开原账号的登录流程，并自动请求设备授权码。
+- 成功授权后更新原账号的访问和刷新凭据，保留账号 ID、昵称、设置与历史，不新增重复账号。
+- 校验原账号身份；登录其他账号或缺少完整 OAuth 凭据时不会覆盖原凭据。授权回调保留当前重新登录目标，重复提交只保存一次。
+
+[1.0.6 更新说明](RELEASE_NOTES_1.0.6_LINK.md)。本次重新登录修复只需更新 App，无需更新电脑组件。
+
+发布检查：374 项 Android 单元测试、215 项 Node 测试、APK 构建和 lint 通过。授权回归使用模拟接口；真实账号登录由用户完成。
+
+## 1.0.5 更新摘要
 
 - 电脑对话的三个点菜单增加「压缩上下文」，使用原生接口，显示执行状态并在完成后刷新上下文数据。
 - 电脑重新检查当前回复是否结束；结果无法确认时不自动重复压缩，原有对话监听保持独立。
@@ -228,7 +238,7 @@ powershell -NoProfile -File tools/task-notifications/install-notify.test.ps1
 pwsh -NoProfile -File tools/task-notifications/settings-file.test.ps1
 ```
 
-GitHub Actions 对 `main` 和 Pull Request 执行 Android 与 Windows 检查。每次上传应用更新需递增版本并同步发布 Release、APK、SHA-256 与更新说明，详见 [发布约定](AGENTS.md)。`v*` 标签另触发正式签名构建，需配置签名 Secrets；`apk-*-debug` 标签在检查通过后可自动发布测试 APK，但 CI 默认调试签名与本地签名可能不同。本次 `apk-1.0.5-debug` 发布本地检查过的 APK，沿用本地 1.0.3 签名。正式签名流程尚未验证。
+GitHub Actions 对 `main` 和 Pull Request 执行 Android 与 Windows 检查。每次上传应用更新需递增版本并同步发布 Release、APK、SHA-256 与更新说明，详见 [发布约定](AGENTS.md)。`v*` 标签另触发正式签名构建，需配置签名 Secrets；`apk-*-debug` 标签在检查通过后可自动发布测试 APK，但 CI 默认调试签名与本地签名可能不同。本次 `apk-1.0.6-debug` 发布本地检查过的 APK，沿用本地 1.0.3 签名。正式签名流程尚未验证。
 
 正式构建可在被 Git 忽略的 `signing.properties` 中配置 `storeFile`、`storePassword`、`keyAlias`、`keyPassword`，或使用 `ANDROID_KEYSTORE_FILE`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD` 环境变量，运行 `assembleRelease`。不要提交密钥库或口令。
 
@@ -263,7 +273,7 @@ The app supports two-way text conversations, available models and reasoning leve
 
 **Task notifications do not inherently require a VPN or Google Play Services, including in mainland China, provided the notification service is reachable.** Authentication, quota, automatic activation and Cloud require access to OpenAI. Activation runs on the phone and cannot proceed while OpenAI is unreachable; it can continue when access is restored. Android background restrictions and network conditions can delay delivery.
 
-Current source and the public [debug APK download](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.5-debug) are **1.0.5 / versionCode 39**. Version 1.0.5 adds native context compaction to the computer conversation overflow menu, with completion tracking and no automatic replay of uncertain operations. Update both the phone and computer component; compaction requires a shared connection and is not yet available for Cloud. Pairing recovery, question dialogs, document downloads and Chinese bold styling remain supported. PDF has a built-in preview; DOCX/PPTX require a compatible viewer. App updates include an APK, SHA-256 checksum and release notes. This release retains the 1.0.4 certificate; GitHub-built 1.0.1 uses a different certificate.
+Current source and the public [debug APK download](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.6-debug) are **1.0.6 / versionCode 40**. Version 1.0.6 opens reauthentication directly for the original account and replaces its OAuth credentials without creating a duplicate. Identity checks prevent overwriting credentials with another account. Only the App needs this update. Native context compaction, pairing recovery, question dialogs, document downloads and Chinese bold styling remain supported. PDF has a built-in preview; DOCX/PPTX require a compatible viewer. App updates include an APK, SHA-256 checksum and release notes. This release retains the 1.0.5 certificate; GitHub-built 1.0.1 uses a different certificate.
 
 Version 1.0.2 adds selective computer conversation sync, swipe actions, remote question dialogs, generated-file downloads, PDF preview and up to 10 draft attachments. Steer receipts bypass conversation snapshot transfer; real latency still depends on connectivity. Notification cards use the launcher artwork; OEMs such as vivo may need one phone reboot to discard cached old icons.
 

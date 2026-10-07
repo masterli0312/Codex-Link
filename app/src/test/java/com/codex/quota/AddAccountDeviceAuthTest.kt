@@ -24,6 +24,7 @@ import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.test.resetMain
 import org.junit.After
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -53,7 +54,7 @@ class AddAccountDeviceAuthTest {
         val session = DeviceCodeSession("auth-id", "ABCD-EFGH")
         coEvery { DeviceCodeManager.requestDeviceCode() } returns Result.success(session)
         coEvery { DeviceCodeManager.pollDeviceToken(session) } returns DevicePollResult.Pending
-        val viewModel = AddAccountViewModel(context, AddAccountUseCase(repository))
+        val viewModel = AddAccountViewModel(context, AddAccountUseCase(repository), repository)
         runCurrent()
 
         viewModel.completeDeviceAuthManually()
@@ -62,5 +63,24 @@ class AddAccountDeviceAuthTest {
         assertFalse(viewModel.uiState.value.isSuccess)
         assertFalse(viewModel.uiState.value.isLoading)
         coVerify(exactly = 0) { repository.addAccount(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test fun reloginCompletesOriginalAccountOnceAndNeverAddsAnotherAccount() = runTest(dispatcher) {
+        val context = mockk<Context>()
+        every { ContextCompat.getContextForLanguage(context) } returns context
+        every { context.getString(any()) } returns "Status"
+        val repository = mockk<CodexAccountRepository>(relaxed = true)
+        coEvery { repository.getAccount("original") } returns null
+        val session = DeviceCodeSession("auth-id", "ABCD-EFGH")
+        val tokens = com.codex.quota.auth.OAuthTokenResult("access", "refresh", null, 3600, null)
+        coEvery { DeviceCodeManager.requestDeviceCode() } returns Result.success(session)
+        coEvery { DeviceCodeManager.pollDeviceToken(session) } returns DevicePollResult.Success(tokens)
+        coEvery { repository.reauthenticateOAuthAccount("original", tokens) } returns Result.success(mockk(relaxed = true))
+        val viewModel = AddAccountViewModel(context, AddAccountUseCase(repository), repository, "original")
+        runCurrent(); viewModel.completeDeviceAuthManually(); runCurrent()
+        assertTrue(viewModel.uiState.value.isSuccess)
+        viewModel.completeDeviceAuthManually(); runCurrent()
+        coVerify(exactly = 1) { repository.reauthenticateOAuthAccount("original", tokens) }
+        coVerify(exactly = 0) { repository.addAccount(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 }

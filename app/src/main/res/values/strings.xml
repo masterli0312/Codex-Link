@@ -1,4 +1,6 @@
 <resources>
+    <string name="relogin_account_hint">Sign in to the original account for %1$s. Its settings and history will be retained.</string>
+    <string name="relogin_account_mismatch">This is a different account or its identity could not be confirmed. Sign in to the original account; its credentials have not been replaced.</string>
     <string name="conversation_compact">Compact context</string>
     <string name="conversation_compacting">Compacting context…</string>
     <string name="conversation_compacted">Context compacted</string>

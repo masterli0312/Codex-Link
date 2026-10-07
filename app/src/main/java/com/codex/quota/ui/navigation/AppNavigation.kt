@@ -164,8 +164,9 @@ fun AppNavigation(
                         navController.navigate(Screen.AccountDetail.createRoute(accountId))
                     },
                     onNavigateToCreditHistory = { navController.navigate(Screen.CreditHistory.createRoute(it)) },
+                    onReauthenticate = { navController.navigate(Screen.AddAccount.createRoute(it)) { launchSingleTop = true } },
                     onNavigateToAddAccount = {
-                        navController.navigate(Screen.AddAccount.route)
+                        navController.navigate(Screen.AddAccount.createRoute())
                     }
                 )
             }
@@ -194,7 +195,8 @@ fun AppNavigation(
                 AccountDetailScreen(
                     viewModel = detailViewModel,
                     onNavigateBack = { if (!navController.popBackStack()) navController.navigate(Screen.Dashboard.route) },
-                    onCreditHistory = { navController.navigate(Screen.CreditHistory.createRoute(accountId)) }
+                    onCreditHistory = { navController.navigate(Screen.CreditHistory.createRoute(accountId)) },
+                    onReauthenticate = { navController.navigate(Screen.AddAccount.createRoute(accountId)) { launchSingleTop = true } }
                 )
             }
 
@@ -206,23 +208,27 @@ fun AppNavigation(
 
             composable(
                 route = Screen.AddAccount.route,
+                arguments = listOf(navArgument("reauthAccountId") { type = NavType.StringType; nullable = true; defaultValue = null }),
                 deepLinks = listOf(
                     navDeepLink { uriPattern = "codexquota://oauth/callback?code={code}" },
                     navDeepLink { uriPattern = "codexquota://oauth/callback" }
                 )
-            ) {
-                val addAccountViewModel: AddAccountViewModel = scopedViewModel {
+            ) { entry ->
+                val reauthAccountId = entry.arguments?.getString("reauthAccountId")
+                val addAccountViewModel: AddAccountViewModel = scopedViewModel(key = reauthAccountId ?: "new") {
                     AddAccountViewModel(
                         context = app,
-                        addAccountUseCase = AddAccountUseCase(app.repository)
+                        addAccountUseCase = AddAccountUseCase(app.repository),
+                        repository = app.repository,
+                        reauthAccountId = reauthAccountId
                     )
                 }
 
-                LaunchedEffect(Unit) {
+                LaunchedEffect(app.currentOAuthCallbackUri) {
                     val oauthUri = app.currentOAuthCallbackUri
                     if (oauthUri != null) {
-                        addAccountViewModel.handleOAuthCallbackUri(oauthUri)
                         app.currentOAuthCallbackUri = null
+                        addAccountViewModel.handleOAuthCallbackUri(oauthUri)
                     }
                 }
 

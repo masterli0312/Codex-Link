@@ -101,7 +101,7 @@ fun AddAccountScreen(
         modifier = modifier.fillMaxSize(),
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.add_account), fontWeight = FontWeight.Bold) },
+                title = { Text(stringResource(if (viewModel.reauthAccountId != null) R.string.re_authenticate_now else R.string.add_account), fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
@@ -140,7 +140,7 @@ fun AddAccountScreen(
                     onClick = { selectedTab = 1 },
                     text = { Text(stringResource(R.string.api_key_token), fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
                 )
-                Tab(
+                if (viewModel.reauthAccountId == null) Tab(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
                     text = { Text(stringResource(R.string.demo_simulator), fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
@@ -154,6 +154,10 @@ fun AddAccountScreen(
                     .padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                if (viewModel.reauthAccountId != null) Text(stringResource(R.string.relogin_account_hint, state.nickname),
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (selectedTab == 0 && state.errorMessage != null) Text(state.errorMessage!!,
+                    color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 if (selectedTab == 0) {
                     // ChatGPT Device Code Auth (similar to codex login --device-auth)
                     Card(

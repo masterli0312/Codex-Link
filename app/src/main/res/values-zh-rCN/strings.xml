@@ -1,4 +1,6 @@
 <resources>
+    <string name="relogin_account_hint">请登录「%1$s」原来的账号，保留其设置和历史。</string>
+    <string name="relogin_account_mismatch">登录账号与原账号不一致，或无法确认身份。请登录原账号；原凭据未被替换。</string>
     <string name="conversation_compact">压缩上下文</string>
     <string name="conversation_compacting">正在压缩上下文…</string>
     <string name="conversation_compacted">上下文已压缩</string>

@@ -46,7 +46,7 @@ import java.time.ZoneId
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AccountDetailScreen(viewModel: AccountDetailViewModel, onNavigateBack: () -> Unit, onCreditHistory: () -> Unit, modifier: Modifier = Modifier) {
+fun AccountDetailScreen(viewModel: AccountDetailViewModel, onNavigateBack: () -> Unit, onCreditHistory: () -> Unit, onReauthenticate: () -> Unit, modifier: Modifier = Modifier) {
     val loaded by viewModel.accountLoaded.collectAsStateWithLifecycle()
     val data by viewModel.accountState.collectAsStateWithLifecycle()
     val refreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
@@ -105,6 +105,9 @@ fun AccountDetailScreen(viewModel: AccountDetailViewModel, onNavigateBack: () ->
                         RelativeTimeText(account.lastSuccessfulSyncEpochMs, style = MaterialTheme.typography.labelSmall, now = now)
                     }
                     data?.let { com.codex.quota.ui.components.ActivationStatusText(it, now) }
+                    if ((usage?.status ?: account.authStatus).isSignedOut) {
+                        TextButton(onClick = onReauthenticate) { Text(stringResource(R.string.re_authenticate_now)) }
+                    }
                     if (usage?.errorMessage == CF_BLOCKED_ERROR) {
                         Text(stringResource(R.string.node_blocked_message), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     }

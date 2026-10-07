@@ -65,6 +65,7 @@ fun DashboardScreen(
     onNavigateToAccountDetail: (String) -> Unit,
     onNavigateToAddAccount: () -> Unit,
     onNavigateToCreditHistory: (String) -> Unit,
+    onReauthenticate: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val refreshingIds by viewModel.refreshingAccountIds.collectAsStateWithLifecycle()
@@ -165,7 +166,7 @@ fun DashboardScreen(
                         AccountCard(
                             item = item,
                             onClick = { onNavigateToAccountDetail(item.account.id) },
-                            onSignInClick = { onNavigateToAccountDetail(item.account.id) },
+                            onSignInClick = { onReauthenticate(item.account.id) },
                             onLongClick = { managing = item },
                             onCreditClick = { onNavigateToCreditHistory(item.account.id) },
                             refreshing = item.account.id in refreshingIds,

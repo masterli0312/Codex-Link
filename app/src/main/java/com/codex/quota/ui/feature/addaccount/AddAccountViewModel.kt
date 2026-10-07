@@ -46,7 +46,9 @@ data class AddAccountUiState(
 
 class AddAccountViewModel(
     context: Context,
-    private val addAccountUseCase: AddAccountUseCase
+    private val addAccountUseCase: AddAccountUseCase,
+    private val repository: com.codex.quota.domain.repository.CodexAccountRepository,
+    val reauthAccountId: String? = null
 ) : ViewModel() {
 
     private val localizedContext = ContextCompat.getContextForLanguage(context)
@@ -56,6 +58,7 @@ class AddAccountViewModel(
 
     private var pollingJob: Job? = null
     private var deviceRequestJob: Job? = null
+    private val tokenSaveLock = kotlinx.coroutines.sync.Mutex()
 
     val availableColors = listOf(
         "#10B981", // Emerald
@@ -69,6 +72,11 @@ class AddAccountViewModel(
     )
 
     init {
+        if (reauthAccountId != null) viewModelScope.launch {
+            repository.getAccount(reauthAccountId)?.account?.let { account ->
+                _uiState.update { it.copy(nickname = account.nickname, email = account.email.orEmpty(), planType = account.planType, selectedColorHex = account.colorHex) }
+            }
+        }
         // Automatically request official OpenAI Device Code on ViewModel initialization
         initDeviceAuth(forceRefresh = true)
     }
@@ -230,6 +238,24 @@ class AddAccountViewModel(
     }
 
     private suspend fun saveTokenAccount(tokenResult: OAuthTokenResult) {
+        tokenSaveLock.lock()
+        try { saveTokenAccountOnce(tokenResult) } finally { tokenSaveLock.unlock() }
+    }
+
+    private suspend fun saveTokenAccountOnce(tokenResult: OAuthTokenResult) {
+        if (_uiState.value.isSuccess) return
+        if (reauthAccountId != null) {
+            _uiState.update { it.copy(isLoading = true) }
+            val result = repository.reauthenticateOAuthAccount(reauthAccountId, tokenResult)
+            if (result.isSuccess) {
+                pollingJob?.cancel(); deviceRequestJob?.cancel()
+                _uiState.update { it.copy(isLoading = false, isPollingDeviceCode = false, isSuccess = true, createdAccount = result.getOrThrow()) }
+            } else {
+                _uiState.update { it.copy(isLoading = false, errorMessage = localizedContext.getString(
+                    if (result.exceptionOrNull()?.message == "ACCOUNT_IDENTITY_MISMATCH") R.string.relogin_account_mismatch else R.string.error_reauthentication)) }
+            }
+            return
+        }
         val decoded = tokenResult.decodedInfo
         val defaultNickname = if (_uiState.value.nickname.isNotBlank()) {
             _uiState.value.nickname
@@ -296,6 +322,7 @@ class AddAccountViewModel(
     }
 
     fun submitAccount(isDemo: Boolean = false) {
+        if (_uiState.value.isLoading || _uiState.value.isSuccess || reauthAccountId != null && isDemo) return
         val state = _uiState.value
         val nickname = state.nickname.trim()
         val apiKey = state.apiKey.trim()
@@ -312,6 +339,15 @@ class AddAccountViewModel(
 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+
+            if (reauthAccountId != null) {
+                val result = repository.reauthenticateAccount(reauthAccountId, apiKey)
+                if (result.isSuccess) {
+                    pollingJob?.cancel(); deviceRequestJob?.cancel()
+                    _uiState.update { it.copy(isLoading = false, isPollingDeviceCode = false, isSuccess = true) }
+                } else _uiState.update { it.copy(isLoading = false, errorMessage = localizedContext.getString(R.string.error_reauthentication)) }
+                return@launch
+            }
 
             val result = addAccountUseCase(
                 nickname = nickname,
@@ -345,5 +381,6 @@ class AddAccountViewModel(
     override fun onCleared() {
         super.onCleared()
         pollingJob?.cancel()
+        deviceRequestJob?.cancel()
     }
 }

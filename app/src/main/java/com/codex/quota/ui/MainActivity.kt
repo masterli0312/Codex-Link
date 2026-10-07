@@ -155,8 +155,9 @@ class MainActivity : AppCompatActivity() {
         val data: Uri? = intent?.data
         if (data != null && data.scheme == "codexquota" && data.host == "oauth") {
             app.currentOAuthCallbackUri = data
-            activeNavController?.navigate(Screen.AddAccount.route) {
-                launchSingleTop = true
+            val controller = activeNavController
+            if (controller?.currentDestination?.route != Screen.AddAccount.route) {
+                controller?.navigate(Screen.AddAccount.createRoute()) { launchSingleTop = true }
             }
         }
     }

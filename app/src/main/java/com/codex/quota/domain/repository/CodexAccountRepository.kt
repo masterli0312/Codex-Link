@@ -47,6 +47,9 @@ interface CodexAccountRepository {
         newApiKey: String
     ): Result<CodexUsage>
 
+    suspend fun reauthenticateOAuthAccount(accountId: String, tokens: com.codex.quota.auth.OAuthTokenResult): Result<CodexAccount> =
+        Result.failure(UnsupportedOperationException("OAuth reauthentication unavailable"))
+
     suspend fun removeAccount(accountId: String): Result<Unit>
     suspend fun reorderAccounts(accountIdsInOrder: List<String>): Result<Unit>
 

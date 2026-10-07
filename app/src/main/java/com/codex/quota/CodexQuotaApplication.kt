@@ -2,6 +2,9 @@ package com.codex.quota
 
 import android.app.Application
 import android.net.Uri
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
 import com.codex.quota.data.local.AppDatabase
 import com.codex.quota.data.local.DataStoreManager
 import com.codex.quota.data.remote.MockOpenAiDataSource
@@ -29,7 +32,7 @@ class CodexQuotaApplication : Application() {
 
     val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    var currentOAuthCallbackUri: Uri? = null
+    var currentOAuthCallbackUri: Uri? by mutableStateOf(null)
 
     lateinit var database: AppDatabase
         private set

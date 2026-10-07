@@ -70,6 +70,35 @@ class CodexAccountRepositoryTest {
         assertEquals("Primary Key", savedEntity?.nickname)
     }
 
+    @Test fun oauthReloginReplacesOriginalCredentialsWithoutCreatingAnAccount() = runTest {
+        val original = repository.addAccount("Personal", "same@test.org", "old-access", PlanType.PLUS, null, "#123456",
+            oauthRefreshToken = "old-refresh", oauthClientId = "official-client").getOrThrow()
+        repository.setAccountRenewalDate(original.id, 123456789L)
+        val result = repository.reauthenticateOAuthAccount(original.id, com.codex.quota.auth.OAuthTokenResult(
+            "new-access", "new-refresh", null, 3600, com.codex.quota.auth.DecodedTokenInfo("same@test.org", "user", null), "official-client"))
+        assertTrue(result.isSuccess)
+        assertEquals(original.id, result.getOrThrow().id)
+        assertEquals(1, repository.getAllAccounts().size)
+        assertEquals("Personal", repository.getAccount(original.id)?.account?.nickname)
+        assertEquals("#123456", repository.getAccount(original.id)?.account?.colorHex)
+        assertEquals(123456789L, repository.getAccount(original.id)?.account?.customRenewalDateEpochMs)
+        assertEquals("new-access", fakeCredentialStore.getApiKey(original.id))
+        assertEquals("new-refresh", fakeCredentialStore.getRefreshToken(original.id))
+    }
+
+    @Test fun wrongAccountAndMissingRefreshTokenLeaveOriginalCredentialsUntouched() = runTest {
+        val original = repository.addAccount("Personal", "same@test.org", "old-access", PlanType.PLUS, null, "#123456",
+            oauthRefreshToken = "old-refresh", oauthClientId = "official-client").getOrThrow()
+        for (token in listOf(
+            com.codex.quota.auth.OAuthTokenResult("new", "refresh", null, 3600, com.codex.quota.auth.DecodedTokenInfo("other@test.org", "other", null)),
+            com.codex.quota.auth.OAuthTokenResult("new", null, null, 3600, com.codex.quota.auth.DecodedTokenInfo("same@test.org", "user", null)))) {
+            assertTrue(repository.reauthenticateOAuthAccount(original.id, token).isFailure)
+            assertEquals("old-access", fakeCredentialStore.getApiKey(original.id))
+            assertEquals("old-refresh", fakeCredentialStore.getRefreshToken(original.id))
+            assertEquals(1, repository.getAllAccounts().size)
+        }
+    }
+
     @Test
     fun oauthAccount_persistsRefreshCredentialAndRemovesItWithAccount() = runTest {
         val account = repository.addAccount(

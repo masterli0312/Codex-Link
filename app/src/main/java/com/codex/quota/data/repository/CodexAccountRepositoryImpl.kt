@@ -183,6 +183,25 @@ class CodexAccountRepositoryImpl(
         return refreshAccountInternal(account, newApiKey)
     }
 
+    override suspend fun reauthenticateOAuthAccount(accountId: String, tokens: com.codex.quota.auth.OAuthTokenResult): Result<CodexAccount> {
+        return try {
+            accountRefreshLocks.getOrPut(accountId) { Mutex() }.withLock {
+                val account = accountDao.getById(accountId)?.toDomain() ?: error("ACCOUNT_MISSING")
+                require(!account.isDemoAccount)
+                require(tokens.accessToken.isNotBlank() && !tokens.refreshToken.isNullOrBlank() && tokens.clientId.isNotBlank()) { "OAUTH_CREDENTIALS_INCOMPLETE" }
+                val previous = credentialStore.getApiKey(accountId)?.let(JwtTokenParser::parseToken)
+                require(com.codex.quota.auth.AccountReauthenticationRules.sameAccount(previous, account.email, tokens.decodedInfo)) { "ACCOUNT_IDENTITY_MISMATCH" }
+                credentialStore.storeOAuthTokens(accountId, tokens.accessToken, tokens.refreshToken!!, tokens.clientId)
+                // Keep the account ID, details, preferences and history. An unrelated quota
+                // refresh failure after successful authorization does not undo the new login.
+                accountDao.updateAuthStatusAndSyncTime(accountId, AuthStatus.REFRESHING.name, account.lastSuccessfulSyncEpochMs)
+                fetchAndSaveUsage(account, tokens.accessToken)
+                accountDao.getById(accountId)?.toDomain() ?: error("ACCOUNT_MISSING")
+            }.let { Result.success(it) }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (e: Exception) { Result.failure(e) }
+    }
+
     override suspend fun removeAccount(accountId: String): Result<Unit> {
         credentialStore.removeApiKey(accountId)
         usageSnapshotDao.deleteByAccountId(accountId)
