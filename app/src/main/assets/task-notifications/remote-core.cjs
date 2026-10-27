@@ -605,7 +605,7 @@ class RemoteController{
     if(c.action==='read'&&c.watch){await this.startWatching(c);return;}
     if(c.action==='presence'){
       const capabilities=['agents'];if(backgroundTasks.safeDir(this.config))capabilities.push('tasks');
-      try{await ocxOverview.overview(this);capabilities.push('ocx_overview');}catch{}
+      if(this.ocxRunner||ocxOverview.available())capabilities.push('ocx_overview');
       await this.emit({id:crypto.randomUUID(),request_id:c.id,host_id:this.hostId,thread_id:c.thread_id,conversation_id:c.conversation_id,
         status:'presence',seq:++this.seq,at:Date.now(),reply:'',host_name:bounded(require('node:os').hostname(),160),capabilities});return;
     }

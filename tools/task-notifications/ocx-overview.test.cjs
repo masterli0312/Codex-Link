@@ -24,9 +24,9 @@ test('opencodex overview filters only excluded providers, aggregates logs and ne
   assert.ok(f.calls.every(args=>JSON.stringify(args)==='["account","list","--json"]'||JSON.stringify(args)==='["logs","history","--json"]'));
  }finally{f.close();}
 });
-test('unavailable command omits the capability and returns the specified error',async()=>{const f=fixture(async()=>{throw Error('fixture unavailable');});try{
- const p=await f.send('presence');assert.deepEqual(p.capabilities,['agents','tasks']);const e=await f.send('ocx_overview');assert.equal(e.error,'OCX_UNAVAILABLE');assert.equal(e.status,'ocx_overview');
- f.controller.config.externalTasksDir='';const next=await f.send('presence');assert.deepEqual(next.capabilities,['agents']);
+test('presence never runs ocx; a failing ocx is reported by the overview request',async()=>{const f=fixture(async()=>{throw Error('fixture unavailable');});try{
+ const p=await f.send('presence');assert.deepEqual(p.capabilities,['agents','tasks','ocx_overview']);assert.equal(f.calls.length,0);const e=await f.send('ocx_overview');assert.equal(e.error,'OCX_UNAVAILABLE');assert.equal(e.status,'ocx_overview');
+ f.controller.config.externalTasksDir='';const next=await f.send('presence');assert.deepEqual(next.capabilities,['agents','ocx_overview']);
  }finally{f.close();}});
 test('legacy JSON formats, missing quota fields and the latest 200 requests are handled safely',async()=>{
  const now=Date.now(),rows=Array.from({length:205},(_,i)=>({provider:'openai',model:'gpt',timestamp:now-i*1000,status:200,tokens:1}));
@@ -57,3 +57,7 @@ test('the Windows launcher handles a fake command shim in a path containing spac
   const result=await execute(['account','list','--json']);assert.equal(JSON.parse(result).fixture,true);
  }finally{process.env.PATH=previous;fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test('real opencodex shapes: inbound from protocolTrace, relay API keys are not pool accounts',async()=>{const now=Date.now(),f=fixture(async a=>a[0]==='account'?JSON.stringify([{provider:'openai',type:'codex',id:'__main__',plan:'plus',active:false},{provider:'masterli',type:'api-key',id:'a014a685',label:'sk-e****43MJ'}]):JSON.stringify({entries:[{provider:'openai-pf88341',model:'gpt-6.1-terra',status:200,totalTokens:5,timestamp:now,protocolTrace:{inbound:'responses'}},{provider:'google-antigravity',model:'gemini-3.8-flash',status:200,totalTokens:1,timestamp:now,protocolTrace:{inbound:'messages'}}]}));
+ try{const e=await f.send('ocx_overview');assert.deepEqual(e.overview.accounts.map(a=>a.label),['main']);
+  assert.deepEqual(e.overview.requests.map(r=>r.inbound).sort(),['messages','responses']);}finally{f.close();}});

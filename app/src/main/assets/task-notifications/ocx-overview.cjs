@@ -22,16 +22,17 @@ function parse(value,names){const raw=typeof value==='string'?JSON.parse(value):
  for(const name of names)if(Array.isArray(raw?.[name]))return raw[name];throw Error('OCX_UNAVAILABLE');}
 function readCache(controller){try{const home=controller.config.ocxHome||path.join(os.homedir(),'.opencodex'),file=path.join(home,'codex-quota-cache.json');if(fs.statSync(file).size>4*1024*1024)return {};const data=JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));return data?.quotas&&typeof data.quotas==='object'?data.quotas:{};}catch{return {};}}
 function label(row){const v=row.accountLogLabel||row.account_log_label||row.label;if(typeof v==='string'&&/^(?:main|[po][a-f0-9]{6}|[a-z]{1,8}[0-9]{3,16})$/i.test(v))return v;
- const id=row.id||row.accountId||row.account_id;return typeof id==='string'&&/^[a-z0-9_-]{1,128}$/i.test(id)&&!/^sk[-_]/i.test(id)?id.slice(-6):'account';}
+ const id=row.id||row.accountId||row.account_id;return typeof id==='string'&&/^[a-z0-9_-]{1,128}$/i.test(id)&&!/^sk[-_]/i.test(id)?id.replace(/^_+|_+$/g,'').slice(-6):'account';}
 function pct(q,kind){const direct=q?.[kind+'_left_percent'];if(typeof direct==='number'&&Number.isFinite(direct))return Math.max(0,Math.min(100,Math.round(direct)));
  const used=q?.[kind+'Percent']??q?.[kind+'_percent'];return typeof used==='number'&&Number.isFinite(used)?Math.max(0,Math.min(100,Math.round(100-used))):-1;}
-function accounts(rows,cache){return rows.filter(r=>r&&validProvider(r.provider)).map(r=>{
+// Pool accounts only: relay API keys are not quota accounts and are not listed.
+function accounts(rows,cache){return rows.filter(r=>r&&validProvider(r.provider)&&r.type!=='api-key').map(r=>{
  const q=cache[r.id]||r.quota||{},plan=typeof r.plan==='string'&&/^[a-z0-9_.-]{1,32}$/i.test(r.plan)&&!/^sk[-_]/i.test(r.plan)?r.plan:'';
  return {label:label(r),plan,selected:r.active===true||r.selected===true,short_left_percent:pct(q,'short'),weekly_left_percent:pct(q,'weekly'),short_reset_at:time(q.shortResetAt||q.short_reset_at),weekly_reset_at:time(q.weeklyResetAt||q.weekly_reset_at)};
  });}
 function requests(rows){
  const recent=rows.filter(r=>r&&typeof r==='object').sort((a,b)=>time(b.timestamp||b.at||b.created_at)-time(a.timestamp||a.at||a.created_at)).slice(0,200),group=new Map(),times=[];
- for(const r of recent){if(!validProvider(r.provider))continue;const model=typeof r.model==='string'&&/^[a-z0-9_.:/-]{1,128}$/i.test(r.model)&&!secretLike(r.model)?r.model:'',provider=r.provider,incoming=r.inboundProtocol||r.inbound||r.inbound_protocol;
+ for(const r of recent){if(!validProvider(r.provider))continue;const model=typeof r.model==='string'&&/^[a-z0-9_.:/-]{1,128}$/i.test(r.model)&&!secretLike(r.model)?r.model:'',provider=r.provider,incoming=r.protocolTrace?.inbound||r.inboundProtocol||r.inbound||r.inbound_protocol;
   const inbound=['responses','messages','chat'].includes(incoming)?incoming:'other',at=time(r.timestamp||r.at||r.created_at),key=JSON.stringify([model,provider,inbound]);if(at)times.push(at);
   if(!group.has(key))group.set(key,{model,provider,inbound,count:0,failures:0,tokens:0,last_at:0,last_error:''});const item=group.get(key);item.count++;
   const failure=Number(r.status??r.statusCode)>=400||r.success===false||r.failed===true;if(failure)item.failures++;
@@ -49,4 +50,6 @@ async function overview(controller){
   return result;
  }catch{throw Error('OCX_UNAVAILABLE');}
 }
-module.exports={overview,execute};
+// Presence must stay cheap: report the capability when ocx is installed, without running it.
+function available(){return Boolean(executable());}
+module.exports={overview,execute,available};
