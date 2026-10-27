@@ -163,7 +163,7 @@ class AddAccountViewModel(
         pollingJob?.cancel()
         pollingJob = viewModelScope.launch {
             _uiState.update { it.copy(isPollingDeviceCode = true) }
-            val intervalMs = (session.intervalSeconds.coerceAtLeast(3)) * 1000L
+            var intervalMs = (session.intervalSeconds.coerceAtLeast(3)) * 1000L
 
             for (attempt in 1..180) { // Poll up to 15 minutes
                 delay(intervalMs)
@@ -187,13 +187,13 @@ class AddAccountViewModel(
                         _uiState.update {
                             it.copy(
                                 isPollingDeviceCode = false,
-                                deviceStatusMessage = localizedContext.getString(R.string.error_device_authorization)
+                                deviceStatusMessage = localizedContext.getString(R.string.device_connection_error)
                             )
                         }
                         return@launch
                     }
                     is DevicePollResult.SlowDown -> {
-                        delay(5000)
+                        intervalMs += 5_000L
                     }
                     is DevicePollResult.Pending -> {
                         _uiState.update {
@@ -202,6 +202,8 @@ class AddAccountViewModel(
                     }
                 }
             }
+            _uiState.update { it.copy(isPollingDeviceCode = false,
+                deviceStatusMessage = localizedContext.getString(R.string.device_code_expired)) }
         }
     }
 

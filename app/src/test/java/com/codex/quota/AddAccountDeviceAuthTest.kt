@@ -19,6 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.test.resetMain
@@ -43,6 +44,23 @@ class AddAccountDeviceAuthTest {
     fun tearDown() {
         unmockkAll()
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun exhaustedPollingStopsAndShowsExpiry() = runTest(dispatcher) {
+        val context = mockk<Context>()
+        every { ContextCompat.getContextForLanguage(context) } returns context
+        every { context.getString(any()) } answers { "resource-${firstArg<Int>()}" }
+        val repository = mockk<CodexAccountRepository>(relaxed = true)
+        val session = DeviceCodeSession("auth-id", "ABCD-EFGH", intervalSeconds = 3)
+        coEvery { DeviceCodeManager.requestDeviceCode() } returns Result.success(session)
+        coEvery { DeviceCodeManager.pollDeviceToken(session) } returns DevicePollResult.Pending
+        val viewModel = AddAccountViewModel(context, AddAccountUseCase(repository), repository)
+        runCurrent()
+        advanceTimeBy(180 * 3_000L + 1)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.isPollingDeviceCode)
+        assertTrue(viewModel.uiState.value.deviceStatusMessage == "resource-${com.codex.quota.R.string.device_code_expired}")
     }
 
     @Test

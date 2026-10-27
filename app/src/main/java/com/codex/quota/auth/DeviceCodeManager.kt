@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -151,15 +152,22 @@ object DeviceCodeManager {
                 }
             }
 
-            if (response.code == 403 || response.code == 400 || response.code == 404) {
-                // Waiting for user to complete authorization in browser
-                return@withContext DevicePollResult.Pending
-            }
-
-            return@withContext DevicePollResult.Pending
+            val errorCode = runCatching { JSONObject(body).optString("error") }.getOrDefault("")
+            return@withContext classifyPollResponse(response.code, errorCode)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
-            return@withContext DevicePollResult.Pending
+            return@withContext DevicePollResult.Error("Device authorization connection failed")
         }
+    }
+
+    internal fun classifyPollResponse(code: Int, error: String): DevicePollResult = when {
+        code == 429 || error == "slow_down" -> DevicePollResult.SlowDown
+        error == "expired_token" -> DevicePollResult.Expired
+        error == "authorization_pending" -> DevicePollResult.Pending
+        error.isNotBlank() -> DevicePollResult.Error("Device authorization rejected")
+        code in setOf(400, 403, 404) -> DevicePollResult.Pending
+        else -> DevicePollResult.Error("Device authorization failed (HTTP $code)")
     }
 
     suspend fun exchangeAuthorizationCode(

@@ -11,6 +11,17 @@ import org.junit.Test
 
 class DeviceCodeManagerTest {
 
+    @Test fun pollHttpResponsesDistinguishPendingThrottlingAndErrors() {
+        assertEquals(DevicePollResult.Pending, DeviceCodeManager.classifyPollResponse(403, ""))
+        assertEquals(DevicePollResult.Pending, DeviceCodeManager.classifyPollResponse(400, "authorization_pending"))
+        assertEquals(DevicePollResult.SlowDown, DeviceCodeManager.classifyPollResponse(429, ""))
+        assertEquals(DevicePollResult.SlowDown, DeviceCodeManager.classifyPollResponse(400, "slow_down"))
+        assertEquals(DevicePollResult.Expired, DeviceCodeManager.classifyPollResponse(400, "expired_token"))
+        assertTrue(DeviceCodeManager.classifyPollResponse(400, "access_denied") is DevicePollResult.Error)
+        assertTrue(DeviceCodeManager.classifyPollResponse(503, "") is DevicePollResult.Error)
+        assertTrue(DeviceCodeManager.classifyPollResponse(200, "") is DevicePollResult.Error)
+    }
+
     @Test
     fun deviceCodeSession_validProperties() {
         val session = DeviceCodeSession(
