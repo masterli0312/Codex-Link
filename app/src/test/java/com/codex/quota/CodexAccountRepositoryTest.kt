@@ -139,6 +139,21 @@ class CodexAccountRepositoryTest {
         }
     }
 
+    @Test fun opaqueApiKeyAccountCanReplaceItsKeyOnlyAfterValidation() = runTest {
+        var validationStatus = AuthStatus.AUTHENTICATION_REQUIRED
+        val source = object : CodexAccountDataSource {
+            override suspend fun fetchUsage(account: CodexAccount, apiKey: String) =
+                Result.success(CodexUsage.empty(account.id, validationStatus))
+        }
+        val repo = CodexAccountRepositoryImpl(fakeAccountDao, fakeUsageDao, fakeCredentialStore, realDataSource = source)
+        val account = repo.addAccount("Key", null, "sk-old", PlanType.PLUS, null, "#123456").getOrThrow()
+        assertTrue(repo.reauthenticateAccount(account.id, "sk-bad").isFailure)
+        assertEquals("sk-old", fakeCredentialStore.getApiKey(account.id))
+        validationStatus = AuthStatus.AUTHENTICATED
+        assertTrue(repo.reauthenticateAccount(account.id, "sk-new").isSuccess)
+        assertEquals("sk-new", fakeCredentialStore.getApiKey(account.id))
+    }
+
     @Test fun demoReloginStillUsesTheSimulatedProvider() = runTest {
         val account = repository.addAccount("demo", null, "demo-old", PlanType.PLUS, null, "#123456", true).getOrThrow()
         assertTrue(repository.reauthenticateAccount(account.id, "demo-new").isSuccess)

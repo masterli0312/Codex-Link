@@ -183,8 +183,13 @@ class CodexAccountRepositoryImpl(
                     val account = accountDao.getById(accountId)?.toDomain() ?: error("ACCOUNT_MISSING")
                     require(newApiKey.isNotBlank())
                     val previousKey = credentialStore.getApiKey(accountId)
-                    if (!account.isDemoAccount) require(com.codex.quota.auth.AccountReauthenticationRules.sameAccount(
-                            previousKey?.let(JwtTokenParser::parseToken), account.email, JwtTokenParser.parseToken(newApiKey)
+                    val previousInfo = previousKey?.let(JwtTokenParser::parseToken)
+                    val incomingInfo = JwtTokenParser.parseToken(newApiKey)
+                    // Opaque API keys carry no identity; replacing one opaque key with another is
+                    // still guarded by the live validation below. A token account cannot become opaque.
+                    val opaqueReplacement = previousKey != null && previousInfo == null && incomingInfo == null
+                    if (!account.isDemoAccount && !opaqueReplacement) require(com.codex.quota.auth.AccountReauthenticationRules.sameAccount(
+                            previousInfo, account.email, incomingInfo
                         )) { "ACCOUNT_IDENTITY_MISMATCH" }
                     // Validate this exact token, without the existing account's OAuth refresh
                     // provider substituting the old credential or changing its refresh token.
