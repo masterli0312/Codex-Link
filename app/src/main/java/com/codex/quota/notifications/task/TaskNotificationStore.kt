@@ -26,7 +26,13 @@ class TaskNotificationStore(private val context: Context) {
 
     fun saveEndpoint(endpoint: String) {
         require(TaskNotificationProtocol.normalizeEndpoint(endpoint) == endpoint)
-        if (read().endpoint == endpoint) return
+        if (read().endpoint == endpoint) {
+            // Saving the paired address again keeps notifications on; it only undoes a relay migration.
+            val settings = read()
+            if (settings.relaySourceOrigin.isNotEmpty() || settings.relayOrigin.isNotEmpty())
+                prefs.edit().remove("relay_source_origin").remove("relay_origin").apply()
+            return
+        }
         val current = TaskNotificationProtocol.normalizeEndpoint(read().endpoint)
         if (current != null && current != endpoint) {
             val old = current.toHttpUrl()
