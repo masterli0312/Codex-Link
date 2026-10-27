@@ -398,9 +398,22 @@ class RemoteController{
     // The journal is metadata only. Detailed state is independently encrypted at rest.
     this.journal[c.id]={...this.journal[c.id],status,seq:e.seq,thread_id:c.thread_id,turn_id:e.turn_id,
       ...(this.active?.c.id===c.id&&this.active.actualThread?{actual_thread_id:this.active.actualThread}:{})};this.persist();
-    fs.writeFileSync(path.join(this.directory,'remote-'+c.id+'.json'),JSON.stringify(encode('event',e.id,e,this.key)),{mode:0o600});
-    const stateFiles=fs.readdirSync(this.directory).filter(n=>/^remote-[a-f0-9-]+\.json$/.test(n));
-    for(const name of stateFiles.slice(0,Math.max(0,stateFiles.length-128)))fs.unlinkSync(path.join(this.directory,name));
+    const statePath=path.join(this.directory,'remote-'+c.id+'.json');
+    const temporary=statePath+'.'+crypto.randomUUID()+'.tmp';
+    try{
+      fs.writeFileSync(temporary,JSON.stringify(encode('event',e.id,e,this.key)),{mode:0o600});
+      fs.renameSync(temporary,statePath);
+    }finally{try{fs.unlinkSync(temporary);}catch(e){if(e.code!=='ENOENT')throw e;}}
+    const stateFiles=fs.readdirSync(this.directory).filter(n=>/^remote-[a-f0-9-]+\.json$/.test(n)).map(name=>({
+      name,id:name.slice(7,-5),mtime:fs.statSync(path.join(this.directory,name)).mtimeMs
+    })).sort((a,b)=>a.mtime-b.mtime||a.name.localeCompare(b.name));
+    let excess=Math.max(0,stateFiles.length-128);
+    for(const file of stateFiles){
+      if(!excess)break;
+      const status=this.journal[file.id]?.status;
+      if(file.id===c.id||file.id===this.active?.c.id||['unknown','accepted','running','approval','input_required','compacting','queued'].includes(status))continue;
+      fs.unlinkSync(path.join(this.directory,file.name));excess--;
+    }
     await this.emit(e);return e;
   }
   async replay(c,id){

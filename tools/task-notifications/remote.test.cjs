@@ -39,6 +39,27 @@ test('resuming an old thread omits its giant transcript without changing its pro
 function command(extra={}){return {id:crypto.randomUUID(),action:'send',host_id:host,thread_id:thread,conversation_id:hash(thread),baseline_turn:'previous',text:'请继续',issued_at:Date.now(),...extra};}
 function fixture(){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'codex-usage-remote-test-'));fs.mkdirSync(path.join(dir,'sessions'));return {dir,cleanup(){assert.equal(path.dirname(dir),path.resolve(os.tmpdir()));assert.ok(path.basename(dir).startsWith('codex-usage-remote-test-'));fs.rmSync(dir,{recursive:true,force:true});}};}
 
+test('state retention keeps current and unresolved requests and removes the oldest completed state',async()=>{
+ const f=fixture(),controller=new RemoteController({directory:f.dir,key,hostId:host,emit:async()=>{}});
+ try{
+  const old=command(),unresolved=command(),active=command();
+  for(let i=0;i<129;i++){
+   const c=i===0?old:i===1?unresolved:i===2?active:command();
+   controller.journal[c.id]={status:i===1?'unknown':i===2?'running':'completed',thread_id:thread};
+   const name=path.join(f.dir,'remote-'+c.id+'.json');fs.writeFileSync(name,'old');
+   fs.utimesSync(name,new Date(1000+i*1000),new Date(1000+i*1000));
+  }
+  controller.active={c:active};
+  const current=command();await controller.update(current,'completed');
+  assert.equal(fs.existsSync(path.join(f.dir,'remote-'+old.id+'.json')),false);
+  for(const c of [unresolved,active,current])assert.equal(fs.existsSync(path.join(f.dir,'remote-'+c.id+'.json')),true);
+  assert.equal(fs.readdirSync(f.dir).filter(n=>/^remote-[a-f0-9-]+\.json$/.test(n)).length,128);
+  const wire=JSON.parse(fs.readFileSync(path.join(f.dir,'remote-'+current.id+'.json'),'utf8'));
+  assert.equal(decode('event',wire,key).request_id,current.id);
+  assert.equal(fs.readdirSync(f.dir).some(n=>n.endsWith('.tmp')),false);
+ }finally{controller.close();f.cleanup();}
+});
+
 test('archive is acknowledged while a catalog read is busy, and concurrent mutations receive a bounded rejection',async()=>{
  const f=fixture(),events=[],calls=[];let release,entered;
  const started=new Promise(r=>entered=r);
