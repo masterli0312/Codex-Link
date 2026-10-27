@@ -6,6 +6,10 @@ import com.codex.quota.ui.feature.taskhistory.CloudConversationViewModel
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flowOf
+import com.codex.quota.domain.model.AccountWithUsage
+import com.codex.quota.domain.model.CodexAccount
+import com.codex.quota.domain.model.PlanType
 import kotlinx.coroutines.test.*
 import org.junit.After
 import org.junit.Before
@@ -42,6 +46,61 @@ class CloudEnvironmentViewModelTest {
         every { store.preparationChoice(any()) } returns null
     }
     @After fun finish() { Dispatchers.resetMain() }
+    @Test fun `identical new tasks get different operations and uncertain retries keep the original`() = runTest(dispatcher) {
+        val account = mockk<CodexAccount> {
+            every { id } returns identity.accountId
+            every { isDemoAccount } returns false
+            every { planType } returns PlanType.PLUS
+        }
+        every { app.repository.observeAccounts() } returns flowOf(listOf(AccountWithUsage(account, null)))
+        environments = listOf(CloudEnvironment("env", "Environment"))
+        coEvery { repository.details(identity, any()) } coAnswers { CloudDetails(CloudTask(secondArg(), "Fixture"), emptyList()) }
+        var saved: CloudCache? = null
+        val records = mutableMapOf<String, CloudSubmission>()
+        every { store.cache(identity) } answers { saved }
+        every { store.save(any()) } answers { saved = firstArg(); Unit }
+        every { store.submission(identity, any()) } answers { records[secondArg()] }
+        every { store.claim(identity, any()) } answers {
+            val key = secondArg<String>()
+            if (key in records) false else { records[key] = CloudSubmission(key, 1); true }
+        }
+        every { store.submitted(identity, any(), any()) } answers {
+            val key = secondArg<String>(); records[key] = records.getValue(key).copy(taskId = thirdArg())
+        }
+        every { store.rejected(identity, any()) } answers { records.remove(secondArg()); Unit }
+        var creates = 0
+        var uncertain = false
+        coEvery { repository.create(identity, "env", "main", "Same prompt") } coAnswers {
+            creates++
+            if (uncertain) throw CloudException(CloudErrorKind.UNCERTAIN)
+            "task-$creates"
+        }
+        coEvery { repository.reply(identity, any(), "Same prompt", any(), "") } coAnswers { "turn-$creates" }
+        val vm = CloudConversationViewModel(app, dispatcher)
+        vm.selectAccount(identity.accountId); advanceUntilIdle(); vm.resumeReads(); advanceUntilIdle()
+        repeat(2) {
+            vm.newTask(); vm.draft("Same prompt"); vm.send(); advanceUntilIdle()
+            assertNull(vm.state.value.error)
+        }
+        assertEquals(2, creates)
+        uncertain = true
+        vm.newTask(); vm.draft("Same prompt"); vm.send(); advanceUntilIdle()
+        assertEquals(CloudErrorKind.UNCERTAIN, vm.state.value.error)
+        val pending = vm.state.value.cache!!.pendingCreations.single()
+        vm.send(); advanceUntilIdle()
+        assertEquals(3, creates)
+        assertEquals(pending, vm.state.value.cache!!.pendingCreations.single())
+    }
+
+    @Test fun `completed record pruning preserves unresolved and protected submissions`() {
+        val entries = (0..300).map { n -> "record-$n" to CloudSubmission("$n", n.toLong(), "task-$n") } +
+            ("unresolved" to CloudSubmission("pending", 0))
+        val removed = completedSubmissionsToRemove(entries, setOf("record-0"), limit = 256)
+        assertFalse("record-0" in removed)
+        assertFalse("unresolved" in removed)
+        assertTrue("record-1" in removed)
+        assertEquals(44, removed.size)
+    }
     @Test fun `list actions target their own cloud row without changing the open conversation`() = runTest(dispatcher) {
         val tasks = listOf(CloudTask("task-a", "First"), CloudTask("task-b", "Second"))
         coEvery { repository.tasks(identity, any()) } returns CloudPage(tasks)

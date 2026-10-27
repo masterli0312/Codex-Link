@@ -17,7 +17,19 @@ data class CloudCache(val identity: CloudIdentity, val environments: List<CloudE
     val page: CloudPage = CloudPage(emptyList()), val details: List<CloudDetails> = emptyList(),
     val fetchedAt: Long = 0, val selectedEnvironment: String = "", val branch: String = "main", val draft: String = "",
     val pendingReplies: List<CloudPendingReply> = emptyList(),
-    val pinnedThreads: Set<String> = emptySet(), val archivedPage: CloudPage = CloudPage(emptyList()))
+    val pinnedThreads: Set<String> = emptySet(), val archivedPage: CloudPage = CloudPage(emptyList()),
+    val pendingCreations: List<CloudPendingCreation> = emptyList())
+
+@Serializable
+data class CloudPendingCreation(val fingerprint: String, val key: String)
+
+internal fun cloudCreationFor(cache: CloudCache, fingerprint: String, newKey: () -> String): CloudPendingCreation =
+    cache.pendingCreations.firstOrNull { it.fingerprint == fingerprint }
+        ?: CloudPendingCreation(fingerprint, newKey())
+
+internal fun completedSubmissionsToRemove(files: List<Pair<String, CloudSubmission?>>, protected: Set<String>, limit: Int = 256): List<String> =
+    files.filter { it.second?.taskId?.isNotBlank() == true }
+        .sortedByDescending { it.second!!.startedAt }.filterNot { it.first in protected }.drop(limit).map { it.first }
 
 /** Private encrypted files, excluded from backup. Scope includes local credential identity AND workspace. */
 class CloudStateStore(context: Context) {
@@ -50,6 +62,33 @@ class CloudStateStore(context: Context) {
     @Synchronized fun submitted(identity: CloudIdentity, fingerprint: String, id: String) {
         val prior = submission(identity, fingerprint) ?: error("Missing Cloud submission")
         write(file(identity, "send-$fingerprint"), json.encodeToString(prior.copy(taskId = id)))
+        pruneCompletedSubmissions()
+    }
+    private fun pruneCompletedSubmissions() {
+        val files = directory.listFiles()?.filter { it.isFile && it.name.matches(Regex("[0-9a-f]{64}-[0-9a-f]{64}-send-[0-9a-f]{64}")) }.orEmpty()
+        val entries = files.map { item -> item.absolutePath to runCatching {
+            read(AtomicFile(item))?.let { json.decodeFromString<CloudSubmission>(it) }
+        }.getOrNull() }
+        val protected = directory.listFiles()?.filter { it.isFile && it.name.matches(Regex("[0-9a-f]{64}-[0-9a-f]{64}-cache")) }
+            .orEmpty().flatMap { item ->
+                try {
+                    val cached = requireNotNull(read(AtomicFile(item))?.let { json.decodeFromString<CloudCache>(it) })
+                    cached.pendingCreations.flatMap { pending ->
+                        val operation = if (pending.key == "legacy") pending.fingerprint else digest("cloud-create:${pending.fingerprint}:${pending.key}")
+                        val taskId = submission(cached.identity, operation)?.taskId.orEmpty()
+                        listOfNotNull(file(cached.identity, "send-$operation").baseFile.absolutePath,
+                            taskId.takeIf { it.isNotBlank() }?.let { id ->
+                                file(cached.identity, "send-${digest("native-turn:$operation:$id")}").baseFile.absolutePath
+                            })
+                    }
+                } catch (_: Exception) {
+                    // An unreadable cache could contain a pending creation; do not prune
+                    // this workspace's records until its recovery state is readable.
+                    val prefix = item.name.removeSuffix("cache") + "send-"
+                    entries.filter { File(it.first).name.startsWith(prefix) }.map { it.first }
+                }
+            }.toSet()
+        completedSubmissionsToRemove(entries, protected).forEach { AtomicFile(File(it)).delete() }
     }
     @Synchronized fun rejected(identity: CloudIdentity, fingerprint: String) { file(identity, "send-$fingerprint").delete() }
     @Synchronized fun removeAccount(accountId: String) {

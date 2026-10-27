@@ -548,30 +548,60 @@ class CloudConversationViewModel(private val app: CodexQuotaApplication,
         viewModelScope.launch {
             val fingerprint = CloudWire.fingerprint(identity, cache.selectedEnvironment, cache.branch, cache.draft)
             try {
-                val prior = withContext(ioDispatcher) { store.submission(identity, fingerprint) }
+                val existing = cache.pendingCreations.firstOrNull { it.fingerprint == fingerprint }
+                val legacy = if (existing == null) withContext(ioDispatcher) { store.submission(identity, fingerprint) } else null
+                val legacyTurn = legacy?.taskId?.takeIf { it.isNotBlank() }?.let { id ->
+                    withContext(ioDispatcher) { store.submission(identity, digest("native-turn:$fingerprint:$id")) }
+                }
+                val pending = existing ?: if (legacy != null && (legacy.taskId.isBlank() || legacyTurn?.taskId.isNullOrBlank()))
+                    CloudPendingCreation(fingerprint, "legacy") else cloudCreationFor(cache, fingerprint) { UUID.randomUUID().toString() }
+                val operation = if (pending.key == "legacy") fingerprint else digest("cloud-create:$fingerprint:${pending.key}")
+                val pendingCache = cache.copy(pendingCreations = cache.pendingCreations.filterNot { it.fingerprint == fingerprint } + pending)
+                withContext(ioDispatcher) { store.save(pendingCache) }
+                _state.update { s -> if (s.identity == identity) s.copy(cache = s.cache?.copy(pendingCreations = pendingCache.pendingCreations)) else s }
+                val prior = withContext(ioDispatcher) { store.submission(identity, operation) }
                 val id = if (prior != null) {
                     if (prior.taskId.isBlank()) throw CloudException(CloudErrorKind.UNCERTAIN)
                     prior.taskId
                 } else {
-                    val claimed = withContext(ioDispatcher) { store.save(cache); store.claim(identity, fingerprint) }
+                    val claimed = withContext(ioDispatcher) { store.claim(identity, operation) }
                     if (!claimed) throw CloudException(CloudErrorKind.UNCERTAIN)
                     val created = repository.create(identity, cache.selectedEnvironment, cache.branch, cache.draft)
-                    withContext(ioDispatcher) { store.submitted(identity, fingerprint, created) }
+                    withContext(ioDispatcher) { store.submitted(identity, operation, created) }
                     created
                 }
-                val turnFingerprint = digest("native-turn:$fingerprint:$id")
-                if(!withContext(ioDispatcher) { store.claim(identity,turnFingerprint) }) throw CloudException(CloudErrorKind.UNCERTAIN)
-                val turnId = repository.reply(identity,id,cache.draft,current.choice)
-                withContext(ioDispatcher) { store.submitted(identity,turnFingerprint,id) }
+                val turnFingerprint = digest("native-turn:$operation:$id")
+                val priorTurn = withContext(ioDispatcher) { store.submission(identity,turnFingerprint) }
+                val turnId = if (priorTurn != null) {
+                    if (priorTurn.taskId.isBlank()) throw CloudException(CloudErrorKind.UNCERTAIN)
+                    priorTurn.taskId
+                } else {
+                    if(!withContext(ioDispatcher) { store.claim(identity,turnFingerprint) }) throw CloudException(CloudErrorKind.UNCERTAIN)
+                    val turn = try { repository.reply(identity,id,cache.draft,current.choice) }
+                    catch (e: CloudException) {
+                        if (e.httpCode in 400..499 && e.httpCode != 408) withContext(ioDispatcher) { store.rejected(identity,turnFingerprint) }
+                        throw e
+                    }
+                    withContext(ioDispatcher) { store.submitted(identity,turnFingerprint,turn) }
+                    turn
+                }
                 val task = CloudTask(id, cache.draft.lineSequence().first().take(120), "running", System.currentTimeMillis())
                 _state.update { s -> s.copy(newTask = false, selectedTask = id,awaitingTurnId = turnId,submittedPrompt = cache.draft, cache = s.cache?.let {
-                    it.copy(draft = "", page = it.page.copy(items = (listOf(task) + it.page.items).distinctBy { t -> t.id })) }) }
+                    it.copy(draft = "", pendingCreations = it.pendingCreations.filterNot { p -> p.fingerprint == fingerprint },
+                        page = it.page.copy(items = (listOf(task) + it.page.items).distinctBy { t -> t.id })) }) }
                 _state.value.cache?.let { withContext(ioDispatcher) { store.save(it) } }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 // Only definite client rejection permits a later user-initiated retry.
-                if (e is CloudException && e.httpCode in 400..499 && e.httpCode != 408)
-                    withContext(ioDispatcher) { store.rejected(identity, fingerprint) }
+                val failedPending = _state.value.cache?.pendingCreations?.firstOrNull { it.fingerprint == fingerprint }
+                val operation = failedPending?.let { if (it.key == "legacy") fingerprint else digest("cloud-create:$fingerprint:${it.key}") }
+                if (operation != null && e is CloudException && e.httpCode in 400..499 && e.httpCode != 408 &&
+                    withContext(ioDispatcher) { store.submission(identity, operation)?.taskId.isNullOrBlank() }) {
+                    withContext(ioDispatcher) { store.rejected(identity, operation) }
+                    _state.update { s -> if (s.identity == identity) s.copy(cache = s.cache?.copy(
+                        pendingCreations = s.cache.pendingCreations.filterNot { it.fingerprint == fingerprint })) else s }
+                    _state.value.cache?.takeIf { it.identity == identity }?.let { withContext(ioDispatcher) { store.save(it) } }
+                }
                 _state.update { it.copy(error = kind(e)) }
             } finally {
                 _state.update { it.copy(sending = false) }
