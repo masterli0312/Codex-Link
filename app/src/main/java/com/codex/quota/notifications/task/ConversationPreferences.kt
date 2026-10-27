@@ -18,15 +18,22 @@ class ConversationPreferenceStore(context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
     private fun file(pairing: String, conversation: String) = AtomicFile(File(directory, TaskInbox.hash("$pairing:$conversation") + ".json"))
     fun readOrNull(pairing: String, conversation: String): ConversationPreferences? = synchronized(lock) {
-        runCatching {
-            val atomic = file(pairing, conversation)
-            if (atomic.baseFile.length() > 32_000) return@synchronized null
-            cache.get(atomic.baseFile.absolutePath, atomic.baseFile.lastModified(), atomic.baseFile.length())?.let { return@synchronized it }
-            val plain = keys.decryptLocal(String(atomic.readFully(), Charsets.UTF_8)) ?: return@synchronized null
-            json.decodeFromString<ConversationPreferences>(plain).also {
-                cache.remember(atomic.baseFile.absolutePath, atomic.baseFile.lastModified(), atomic.baseFile.length(), it)
-            }
-        }.getOrNull()
+        val atomic = file(pairing, conversation)
+        if (!StoredFileRead.existsOrUnknown(atomic.baseFile)) return@synchronized null
+        runCatching { load(atomic, useCache = true) }.getOrNull()
+    }
+    private fun load(atomic: AtomicFile, useCache: Boolean): ConversationPreferences = StoredFileRead.forUpdate(
+        StoredFileRead.existsOrUnknown(atomic.baseFile), { ConversationPreferences() }
+    ) {
+        if (useCache && !File(atomic.baseFile.path + ".bak").exists()) {
+            cache.get(atomic.baseFile.absolutePath, atomic.baseFile.lastModified(), atomic.baseFile.length())?.let { return@forUpdate it }
+        }
+        val bytes = atomic.readFully()
+        require(bytes.size <= 32_000)
+        val plain = requireNotNull(keys.decryptLocal(String(bytes, Charsets.UTF_8)))
+        json.decodeFromString<ConversationPreferences>(plain).also {
+            cache.remember(atomic.baseFile.absolutePath, atomic.baseFile.lastModified(), atomic.baseFile.length(), it)
+        }
     }
     fun read(pairing: String, conversation: String) = readOrNull(pairing, conversation) ?: ConversationPreferences()
     // Process-owned, ordered IO survives a screen leaving composition. Reads queue behind
@@ -42,7 +49,7 @@ class ConversationPreferenceStore(context: Context) {
         }
     }
     fun update(pairing: String, conversation: String, change: (ConversationPreferences) -> ConversationPreferences) = synchronized(lock) {
-        val updated = change(read(pairing, conversation))
+        val updated = change(load(file(pairing, conversation), useCache = false))
         require(updated.model.length <= 128 && updated.effort.length <= 32 && updated.draft.toByteArray().size <= 16_384)
         require(updated.mode in setOf("", "plan", "default") && updated.permission in RemoteSessionRules.permissions)
         require(ConversationEnvironmentRules.validProject(updated.project))

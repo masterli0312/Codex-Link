@@ -68,47 +68,55 @@ class ConversationSyncSelectionStore(context: Context) {
     private fun file(computer: ComputerConnection) = AtomicFile(File(directory, ConversationSyncRules.scope(computer) + ".json"))
     fun read(computer: ComputerConnection): ConversationSyncSelection = synchronized(lock) {
         val atomic = file(computer)
-        cache.get(atomic.baseFile.absolutePath, atomic.baseFile.lastModified(), atomic.baseFile.length())?.let { return@synchronized it }
-        runCatching {
-            require(atomic.baseFile.length() <= 2_500_000)
-            val plain = keys.decryptLocal(String(atomic.readFully(), Charsets.UTF_8)) ?: return@synchronized ConversationSyncSelection()
-            json.decodeFromString<ConversationSyncSelection>(plain).takeIf { it.conversations.size <= 1000 && it.ids.all(ConversationSyncRules::validId) }
-                ?.also { cache.remember(atomic.baseFile.absolutePath, atomic.baseFile.lastModified(), atomic.baseFile.length(), it) }
-        }.getOrNull() ?: ConversationSyncSelection()
+        runCatching { load(atomic, useCache = true) }.getOrDefault(ConversationSyncSelection())
+    }
+    private fun load(atomic: AtomicFile, useCache: Boolean): ConversationSyncSelection = StoredFileRead.forUpdate(
+        StoredFileRead.existsOrUnknown(atomic.baseFile), { ConversationSyncSelection() }
+    ) {
+        if (useCache && !File(atomic.baseFile.path + ".bak").exists()) {
+            cache.get(atomic.baseFile.absolutePath, atomic.baseFile.lastModified(), atomic.baseFile.length())?.let { return@forUpdate it }
+        }
+        val bytes = atomic.readFully()
+        require(bytes.size <= 2_500_000)
+        val plain = requireNotNull(keys.decryptLocal(String(bytes, Charsets.UTF_8)))
+        json.decodeFromString<ConversationSyncSelection>(plain).also {
+            require(it.conversations.size <= 1000 && it.ids.all(ConversationSyncRules::validId))
+            cache.remember(atomic.baseFile.absolutePath, atomic.baseFile.lastModified(), atomic.baseFile.length(), it)
+        }
     }
     fun isSelected(computer: ComputerConnection, id: String) = id in read(computer).ids
     fun markActivity(computer: ComputerConnection, id: String, turn: String, running: Boolean, at: Long, completed: Boolean = !running) = synchronized(lock) {
-        val previous = read(computer)
+        val previous = load(file(computer), useCache = false)
         val updated = previous.copy(conversations = previous.conversations.map {
             if (it.thread.thread_id == id) ConversationSyncRules.activity(it, turn, running, at, completed) else it
         })
         if (updated != previous) write(computer, updated)
     }
     fun markSeen(computer: ComputerConnection, id: String) = synchronized(lock) {
-        val previous = read(computer)
+        val previous = load(file(computer), useCache = false)
         val updated = previous.copy(conversations = previous.conversations.map {
             if (it.thread.thread_id == id && it.unread) it.copy(seenCompletionAt = it.completedAt) else it
         })
         if (updated != previous) write(computer, updated)
     }
     fun replace(computer: ComputerConnection, ids: Set<String>, available: List<RemoteThreadSummary>) = synchronized(lock) {
-        write(computer, ConversationSyncRules.replace(read(computer), ids, available))
+        write(computer, ConversationSyncRules.replace(load(file(computer), useCache = false), ids, available))
     }
     fun add(computer: ComputerConnection, thread: RemoteThreadSummary, archived: Boolean = false) = synchronized(lock) {
         require(ConversationSyncRules.validId(thread.thread_id))
-        val previous = read(computer)
+        val previous = load(file(computer), useCache = false)
         if (thread.thread_id !in previous.ids) write(computer,
             previous.copy(conversations = previous.conversations + SyncedConversation(thread, archived)))
     }
     fun confirmArchive(computer: ComputerConnection, id: String, archived: Boolean, at: Long) = synchronized(lock) {
-        val previous = read(computer)
+        val previous = load(file(computer), useCache = false)
         val updated = previous.copy(conversations = previous.conversations.map {
             if (it.thread.thread_id == id) it.copy(archived = archived, stateChangedAt = at) else it
         })
         if (updated != previous) write(computer, updated)
     }
     fun confirmName(computer: ComputerConnection, id: String, name: String, at: Long) = synchronized(lock) {
-        val previous = read(computer)
+        val previous = load(file(computer), useCache = false)
         val updated = previous.copy(conversations = previous.conversations.map {
             if (it.thread.thread_id == id) it.copy(thread = it.thread.copy(title = name), stateChangedAt = at) else it
         })
@@ -118,7 +126,7 @@ class ConversationSyncSelectionStore(context: Context) {
         if (query.action != "threads" || event.status != "threads" || query.host_id != computer.hostId || event.host_id != computer.hostId ||
             event.request_id != query.id || event.thread_id != query.thread_id || event.conversation_id != query.conversation_id ||
             event.partial || event.attachment_pending || event.error.isNotBlank()) return@synchronized
-        val previous = read(computer)
+        val previous = load(file(computer), useCache = false)
         val byId = event.threads.associateBy { it.thread_id }
         val updated = previous.copy(conversations = previous.conversations.map { entry ->
             val thread = byId[entry.thread.thread_id]
