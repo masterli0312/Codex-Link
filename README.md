@@ -6,9 +6,9 @@
 
 在 Android 手机上查看多个 ChatGPT / Codex 账号的额度，并通过配对电脑接收任务提醒、阅读和继续 Codex 对话。支持简体中文与英文。
 
-[下载 1.0.7 APK](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.7-debug/Codex-Link-v1.0.7-debug.apk) · [发布说明](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.7-debug) · [全部版本](https://github.com/masterli0312/Codex-Link/releases)
+[下载 1.0.8 APK](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.8-debug/Codex-Link-v1.0.8-debug.apk) · [发布说明](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.8-debug) · [全部版本](https://github.com/masterli0312/Codex-Link/releases)
 
-> 项目由 Codex Usage 更名为 **Codex Link**。当前源码与公开 APK 为 **1.0.7**（versionCode **41**），电脑共享服务启动时复用已就绪的原生服务、不再重复启动或抢占端口，保留重新登录修复、主动上下文压缩等现有功能。代码更新同步发布 GitHub Release，提供 APK、SHA-256 校验文件和更新说明。
+> 项目由 Codex Usage 更名为 **Codex Link**。当前源码与公开 APK 为 **1.0.8**（versionCode **42**），修复代码审查核实的凭据、Reset、本地数据、通知、Cloud 与电脑组件问题，保留共享服务启动协调、主动上下文压缩等现有功能。代码更新同步发布 GitHub Release，提供 APK、SHA-256 校验文件和更新说明。
 
 > Android **8.0+**。已配对的用户升级后还需从 App 重新分享电脑安装包，在电脑运行 `setup.cmd` 并按提示重启 Codex。只更新 APK 不会更新电脑组件。
 
@@ -51,12 +51,12 @@
 
 ## 安装与升级
 
-1. 下载 [Codex-Link-v1.0.7-debug.apk](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.7-debug/Codex-Link-v1.0.7-debug.apk)。
+1. 下载 [Codex-Link-v1.0.8-debug.apk](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.8-debug/Codex-Link-v1.0.8-debug.apk)。
 2. 在 Android 8.0 或更新系统打开 APK，按系统提示允许安装。
 3. 首次打开添加自己的账号；需要提醒时允许通知和后台运行。
 4. 已使用电脑同步的用户：更新手机后，重新分享电脑安装 ZIP，在原电脑运行 `setup.cmd`，按安装器提示重启 Codex。
 
-公开下载的 1.0.7 包名为 `com.codex.quota.debug`，内部版本号 **41**。本次 Release 使用经过本地构建检查的 APK，沿用本地 1.0.3 签名。覆盖升级需要相同包名与签名。**1.0.1 的 GitHub 构建与本地签名不同，不能直接覆盖。保留数据升级需要原签名密钥构建；卸载会清除手机本地账号、配对和设置。** 发布说明包含签名证书 SHA-256，便于核对。
+公开下载的 1.0.8 包名为 `com.codex.quota.debug`，内部版本号 **42**。本次 Release 使用经过本地构建检查的 APK，沿用本地 1.0.3 签名。覆盖升级需要相同包名与签名。**1.0.1 的 GitHub 构建与本地签名不同，不能直接覆盖。保留数据升级需要原签名密钥构建；卸载会清除手机本地账号、配对和设置。** 发布说明包含签名证书 SHA-256，便于核对。
 
 发布页同时提供 SHA256 校验文件。此版本不是正式签名生产包。
 
@@ -148,7 +148,18 @@ Android 13+ 需要通知权限；声音和震动由系统通知渠道管理。�
 
 详细边界和卸载方法见 [电脑连接指南](docs/task-notifications.md)。
 
-## 1.0.7 更新摘要（当前源码）
+## 1.0.8 更新摘要（当前源码）
+
+- 重新登录先验证新凭据再替换，失败保留原凭据；Reset 仅在额度刷新成功后结束操作，避免重复扣除。
+- 清除所有数据会删除含配对密钥的安装包与下载缓存；读取失败的同步列表和草稿不再被覆盖。
+- 保存原配对地址不再关闭通知；Cloud 可再次新建相同正文的任务；设备码登录提示网络与服务错误。
+- 电脑组件：远程桥接改用系统释放的单实例锁，状态文件清理保留活动请求，安装器避免覆盖并发修改的配置。
+
+[1.0.8 更新说明](RELEASE_NOTES_1.0.8_LINK.md)。**需重新分享电脑安装包并运行 `setup.cmd`** 更新电脑组件。
+
+发布检查：229 项 Node 测试、PowerShell 测试、394 项 Android 单元测试、APK 构建和 lint 通过。手机端功能未在本次实测。
+
+## 1.0.7 更新摘要
 
 - 共享服务启动前请求 `/readyz`：已有就绪服务直接复用，不再每分钟尝试启动第二份；端口被其他程序占用时只记录状态，不抢占、不结束该进程。
 - 同一端口只保留一个监督进程（系统自动释放的命名管道）；原生服务退出后，端口被其他就绪服务接管则让出，空闲则重启。
@@ -248,7 +259,7 @@ powershell -NoProfile -File tools/task-notifications/install-notify.test.ps1
 pwsh -NoProfile -File tools/task-notifications/settings-file.test.ps1
 ```
 
-GitHub Actions 对 `main` 和 Pull Request 执行 Android 与 Windows 检查。每次上传应用更新需递增版本并同步发布 Release、APK、SHA-256 与更新说明，详见 [发布约定](AGENTS.md)。`v*` 标签另触发正式签名构建，需配置签名 Secrets；`apk-*-debug` 标签在检查通过后可自动发布测试 APK，但 CI 默认调试签名与本地签名可能不同。本次 `apk-1.0.7-debug` 发布本地检查过的 APK，沿用本地 1.0.3 签名。正式签名流程尚未验证。
+GitHub Actions 对 `main` 和 Pull Request 执行 Android 与 Windows 检查。每次上传应用更新需递增版本并同步发布 Release、APK、SHA-256 与更新说明，详见 [发布约定](AGENTS.md)。`v*` 标签另触发正式签名构建，需配置签名 Secrets；`apk-*-debug` 标签在检查通过后可自动发布测试 APK，但 CI 默认调试签名与本地签名可能不同。本次 `apk-1.0.8-debug` 发布本地检查过的 APK，沿用本地 1.0.3 签名。正式签名流程尚未验证。
 
 正式构建可在被 Git 忽略的 `signing.properties` 中配置 `storeFile`、`storePassword`、`keyAlias`、`keyPassword`，或使用 `ANDROID_KEYSTORE_FILE`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD` 环境变量，运行 `assembleRelease`。不要提交密钥库或口令。
 
@@ -283,7 +294,7 @@ The app supports two-way text conversations, available models and reasoning leve
 
 **Task notifications do not inherently require a VPN or Google Play Services, including in mainland China, provided the notification service is reachable.** Authentication, quota, automatic activation and Cloud require access to OpenAI. Activation runs on the phone and cannot proceed while OpenAI is unreachable; it can continue when access is restored. Android background restrictions and network conditions can delay delivery.
 
-Current source and the public [debug APK download](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.7-debug) are **1.0.7 / versionCode 41**. Version 1.0.7 makes the Windows shared app-server start reuse an existing server that answers `/readyz`, report (never seize or stop) a port held by another program, and keep one supervisor per port; re-share the computer setup ZIP and run `setup.cmd` to update the Windows component. Version 1.0.6 reauthentication of the original account is retained. Native context compaction, pairing recovery, question dialogs, document downloads and Chinese bold styling remain supported. PDF has a built-in preview; DOCX/PPTX require a compatible viewer. App updates include an APK, SHA-256 checksum and release notes. This release retains the 1.0.6 certificate; GitHub-built 1.0.1 uses a different certificate.
+Current source and the public [debug APK download](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.8-debug) are **1.0.8 / versionCode 42**. Version 1.0.8 fixes issues confirmed in a full code review: credentials are validated before reauthentication replaces them, reset credits cannot be spent twice after a failed refresh, clearing data removes setup ZIPs and download caches, and the Windows bridge uses an OS-released single-instance lock. Re-share the setup ZIP and run `setup.cmd`. Version 1.0.7 makes the Windows shared app-server start reuse an existing server that answers `/readyz`, report (never seize or stop) a port held by another program, and keep one supervisor per port; re-share the computer setup ZIP and run `setup.cmd` to update the Windows component. Version 1.0.6 reauthentication of the original account is retained. Native context compaction, pairing recovery, question dialogs, document downloads and Chinese bold styling remain supported. PDF has a built-in preview; DOCX/PPTX require a compatible viewer. App updates include an APK, SHA-256 checksum and release notes. This release retains the 1.0.7 certificate; GitHub-built 1.0.1 uses a different certificate.
 
 Version 1.0.2 adds selective computer conversation sync, swipe actions, remote question dialogs, generated-file downloads, PDF preview and up to 10 draft attachments. Steer receipts bypass conversation snapshot transfer; real latency still depends on connectivity. Notification cards use the launcher artwork; OEMs such as vivo may need one phone reboot to discard cached old icons.
 
