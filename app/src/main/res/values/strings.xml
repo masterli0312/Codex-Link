@@ -619,7 +619,7 @@
     <string name="computer_unreachable">Cannot reach this computer. Cached conversations remain available; new tasks require reconnection.</string>
     <string name="computer_unpair">Unpair</string>
     <string name="computer_unpair_detail">Stop receiving and controlling this computer and remove its pairing key from this phone. Cached conversations remain readable. Reconnecting requires a new installer.</string>
-    <string name="computer_change_service_detail">Changing only the server address while keeping the same topic preserves pairings and conversations; update the computer component too. Changing the topic clears pairings and cached conversations. Account credentials and quota are unaffected.</string>
+    <string name="computer_change_service_detail">Changing only the server address while keeping the same topic preserves pairings and conversations; update the computer component too. Changing the topic clears all computer pairings, cached conversations, and local drafts. Account credentials and quota are unaffected.</string>
     <string name="computer_notification_preview">Notification preview</string>
     <string name="computer_notification_preview_detail">Show conversation titles and reply excerpts in new notifications. Lock-screen visibility follows system privacy settings.</string>
     <string name="remote_downloading_result">Syncing conversation…</string>

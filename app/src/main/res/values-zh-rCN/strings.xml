@@ -613,7 +613,7 @@
     <string name="computer_unreachable">暂时无法连接这台电脑。仍可阅读缓存对话，恢复连接后才能执行新任务。</string>
     <string name="computer_unpair">解除配对</string>
     <string name="computer_unpair_detail">停止接收和控制这台电脑，并移除手机上的配对密钥。缓存对话仍可阅读。重新连接需要导出新的安装包。</string>
-    <string name="computer_change_service_detail">保留同一主题，仅更换服务器地址时会保留配对与对话，电脑组件也需更新。更换主题会清除配对与对话缓存。账号凭据和额度不受影响。</string>
+    <string name="computer_change_service_detail">保留同一主题，仅更换服务器地址时会保留配对与对话，电脑组件也需更新。更换主题会清除所有电脑配对、对话缓存和本地草稿。账号凭据和额度不受影响。</string>
     <string name="computer_notification_preview">通知预览</string>
     <string name="computer_notification_preview_detail">在新通知中显示对话名称和回复摘要。锁屏显示范围由系统隐私设置决定。</string>
     <string name="remote_downloading_result">正在同步对话…</string>
