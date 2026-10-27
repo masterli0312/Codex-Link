@@ -136,6 +136,11 @@ class ConversationSyncSelectionStore(context: Context) {
         })
         if (updated != previous) write(computer, updated)
     }
+    fun clear() = synchronized(lock) {
+        cache.clear()
+        check(!directory.exists() || directory.deleteRecursively()) { "Could not clear conversation selections" }
+        changes.update { it + 1 }
+    }
     private fun write(computer: ComputerConnection, selection: ConversationSyncSelection) {
         require(selection.conversations.size <= 1000)
         directory.mkdirs()

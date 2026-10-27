@@ -15,6 +15,7 @@ import com.codex.quota.widget.WidgetUpdateHelper
 import com.codex.quota.worker.WorkScheduler
 import com.codex.quota.notifications.task.TaskCompletionService
 import com.codex.quota.notifications.task.TaskNotificationStore
+import com.codex.quota.notifications.task.ConversationSyncSelectionStore
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -161,8 +162,9 @@ class SettingsViewModel(
     fun clearAllData(context: Context) {
         viewModelScope.launch {
             if (accountRepository.clearAllData().isSuccess) {
-                TaskNotificationStore(context).clear()
                 TaskCompletionService.stop(context)
+                TaskNotificationStore(context).clear()
+                ConversationSyncSelectionStore(context).clear()
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     clearPrivateTaskCaches(context.cacheDir)
                     com.codex.quota.ui.feature.taskhistory.OfflineVoiceInput.clearModels(context)
