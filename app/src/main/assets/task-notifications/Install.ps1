@@ -1,4 +1,4 @@
-param([string]$Endpoint, [string]$CodexDirectory, [switch]$Uninstall, [switch]$NoTest)
+﻿param([string]$Endpoint, [string]$CodexDirectory, [switch]$Uninstall, [switch]$NoTest)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'SettingsFile.ps1')
 if (-not $CodexDirectory) {
@@ -134,6 +134,20 @@ function Get-PreservedNotify([array]$Command, [string]$NotifyScript, [array]$Sav
     return ,@($SavedOriginal)
 }
 
+function Select-ExternalTasksDirectory([string]$Previous, [bool]$Interactive) {
+    if (-not $Interactive) { return $Previous }
+    $hint = if ($Previous) { '留空保留现有设置' } else { '默认否' }
+    $answer = (Read-Host "是否开启读取 Codex 后台任务？[y/N]（$hint）").Trim()
+    if (-not $answer) { return $Previous }
+    if ($answer -match '^(?i:n|no)$') { return '' }
+    if ($answer -notmatch '^(?i:y|yes)$') { throw '请输入 y 或 n，原设置未更改。' }
+    $default = if ($Previous) { $Previous } else { 'D:\CodexArtifacts\tools\tasks' }
+    $selected = (Read-Host "请确认任务目录（留空使用 $default）").Trim()
+    if (-not $selected) { $selected = $default }
+    if (-not (Test-Path -LiteralPath $selected -PathType Container)) { throw '任务目录不存在；原设置未更改。' }
+    return [IO.Path]::GetFullPath($selected)
+}
+
 $oldConfigExists = Test-Path -LiteralPath $configFile
 $oldText = if ($oldConfigExists) { [IO.File]::ReadAllText($configFile) } else { '' }
 $oldNotify = Read-Notify $oldText
@@ -196,6 +210,11 @@ if ($remoteEnabled) {
     $codexExe = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($nativeEncoded))
     if (-not (Test-Path -LiteralPath $codexExe)) { throw 'The discovered native Codex runtime is missing. No settings were changed.' }
 }
+$savedConnection = if (Test-Path -LiteralPath $connectionFile) { Get-Content -LiteralPath $connectionFile -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+$canPrompt = $false
+try { $canPrompt = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected } catch { }
+$previousTasksDir = if ($savedConnection -and $savedConnection.externalTasksDir) { [string]$savedConnection.externalTasksDir } else { '' }
+$externalTasksDir = Select-ExternalTasksDirectory $previousTasksDir $canPrompt
 New-Item -ItemType Directory -Path $runtime -Force | Out-Null
 $launcherSource = Join-Path $PSScriptRoot 'NotificationLauncher.cs'
 if (-not (Test-Path -LiteralPath $launcherSource)) { throw 'Extract the latest setup ZIP shared by Codex Usage first.' }
@@ -229,7 +248,7 @@ if (Test-Path -LiteralPath $connectionFile) {
 Stop-ScheduledTask -TaskName $remoteTaskName -ErrorAction SilentlyContinue
 Stop-OwnRemoteBridge $runtime
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'task-content.cjs') -Destination (Join-Path $runtime 'task-content.cjs') -Force
-foreach ($name in @('remote.cjs', 'remote-core.cjs', 'codex-client.cjs', 'native-runtime.cjs', 'conversation-library.cjs', 'conversation-images.cjs','conversation-files.cjs','conversation-questions.cjs','completion-watch.cjs', 'live-watch.cjs', 'remote-activity.cjs', 'remote-goal.cjs', 'remote-options.cjs', 'remote-stream.cjs', 'remote-attachments.cjs', 'shared-server.cjs', 'shared-start-if-needed.cjs', 'Enable-SharedConversations.ps1', 'SettingsFile.ps1')) {
+foreach ($name in @('remote.cjs', 'remote-core.cjs', 'remote-agents.cjs', 'rollout-reader.cjs', 'background-tasks.cjs', 'ocx-overview.cjs', 'codex-client.cjs', 'native-runtime.cjs', 'conversation-library.cjs', 'conversation-images.cjs','conversation-files.cjs','conversation-questions.cjs','completion-watch.cjs', 'live-watch.cjs', 'remote-activity.cjs', 'remote-goal.cjs', 'remote-options.cjs', 'remote-stream.cjs', 'remote-attachments.cjs', 'shared-server.cjs', 'shared-start-if-needed.cjs', 'Enable-SharedConversations.ps1', 'SettingsFile.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $runtime $name) -Force
 }
 $monitorEnabledAt = [DateTime]::UtcNow.ToString('o')
@@ -243,6 +262,7 @@ $settings.remoteHostId = if ($pairedHostId) { $pairedHostId } elseif ($savedConn
 if ($codexExe) { $settings.codexExecutable = $codexExe }
 if ($contentKey) { $settings.contentKey = $contentKey }
 if ($savedConnection -and $savedConnection.appServerUrl) { $settings.appServerUrl = $savedConnection.appServerUrl }
+if ($externalTasksDir) { $settings.externalTasksDir = $externalTasksDir }
 Write-SettingsFileAtomically $connectionFile ($settings | ConvertTo-Json -Depth 5)
 Write-NotifyConfiguration $configFile $oldText @($launcherPath, $node, $scriptPath) $oldConfigExists
 

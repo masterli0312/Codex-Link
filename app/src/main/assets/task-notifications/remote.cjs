@@ -36,7 +36,7 @@ async function responseFailure(response){
 function pruneOutbox(outbox,now=Date.now()){
   for(const [id,event] of outbox){
     const ttl=event.status==='presence'?25000:event.status==='snapshot'?60000:
-      ['threads','models','history','activities','session_info','skills'].includes(event.status)?45000:0;
+      ['threads','models','history','activities','session_info','skills','agents','tasks','ocx_overview'].includes(event.status)?45000:0;
     if(ttl&&now-event.at>ttl)outbox.delete(id);
   }
 }
@@ -47,7 +47,7 @@ class CommandDispatcher {
   constructor(handle,onError=()=>{},limit=8){this.handle=handle;this.onError=onError;this.limit=limit;this.pending=new Map();this.closed=false;}
   submit(c){
     if(this.closed||this.pending.has(c.id))return false;
-    const control=['presence','stop','status','approve','answer_input','cancel_queue','steer','goal_pause','goal_clear'].includes(c.action);
+    const control=['presence','stop','agent_stop','task_stop','status','approve','answer_input','cancel_queue','steer','goal_pause','goal_clear'].includes(c.action);
     if([...this.pending.values()].filter(p=>p.control===control).length>=this.limit)throw Error('STREAM_OVERLOAD');
     const entry={control,promise:null};this.pending.set(c.id,entry);
     // Enter the controller synchronously so its active/journal guards preserve receive order.
@@ -105,7 +105,8 @@ function createHealth(directory,clock=Date.now){
   const errors=new Set(['','NETWORK','TIMEOUT','HTTP','RATE_LIMIT','DAILY_LIMIT','OVERSIZE']);
   const kinds=new Set(['','send','create','stop','approve','answer_input','status','models','threads','read','history','activities','rename','archive','unarchive','queue','steer','cancel_queue','presence',
     'fork','forked','accepted','running','approval','input_required','completed','interrupted','failed','unknown','snapshot','managed','queued','steered','cancelled',
-    'goal_read','goal_start','goal_pause','goal_resume','goal_clear','goal','session_info','skills','image','file','thread_activity','compact','compacting','compacted']);
+    'goal_read','goal_start','goal_pause','goal_resume','goal_clear','goal','session_info','skills','image','file','thread_activity','compact','compacting','compacted',
+    'agents','agent_read','agent_stop','tasks','task_stop','ocx_overview']);
   return {snapshot:()=>({...state}),update(patch){
     for(const [key,value] of Object.entries(patch)){
       if(counters.has(key)&&Number.isSafeInteger(value)&&value>=0)state[key]=value;
@@ -232,7 +233,7 @@ async function main(directory=__dirname){
     outbox.set(event.request_id,event);
     health.update({queuedEvents:outbox.size,lastPublishError:transportFailure(error),lastPublishStatus:Number.isInteger(error.status)?error.status:0});
   });
-  const controller=new RemoteController({directory,key:config.contentKey,hostId:config.remoteHostId,endpoint:config.endpoint,
+  const controller=new RemoteController({directory,key:config.contentKey,hostId:config.remoteHostId,endpoint:config.endpoint,config,
     questionFactory:thread=>new (require('./conversation-questions.cjs').DesktopQuestionReader)(config.codexHome,thread),
     clientFactory:()=>createCodexClient(config),resolve:c=>resolveThread(config,c),
     recover:(thread,turn)=>readSnapshot(config,thread,turn),readLocal:thread=>readLatestSnapshot(config,thread),

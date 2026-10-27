@@ -3,7 +3,7 @@ $source = Join-Path $PSScriptRoot '../../app/src/main/assets/task-notifications/
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($source, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw 'Installer syntax error' }
-foreach ($name in @('Read-Notify', 'Set-Notify', 'Write-NotifyConfiguration', 'Get-WrappedNotify', 'Test-OwnNotify', 'Get-PreservedNotify')) {
+foreach ($name in @('Read-Notify', 'Set-Notify', 'Write-NotifyConfiguration', 'Get-WrappedNotify', 'Test-OwnNotify', 'Get-PreservedNotify', 'Select-ExternalTasksDirectory')) {
     $function = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     Invoke-Expression $function.Extent.Text
 }
@@ -38,4 +38,21 @@ try {
     try { Write-NotifyConfiguration $fixture '' @('other.exe') $false } catch { $rejected = $true }
     if (-not $rejected -or (Read-Notify ([IO.File]::ReadAllText($fixture)))[0] -ne 'node.exe') { throw 'Newly created config was overwritten' }
 } finally { if ([IO.File]::Exists($fixture)) { [IO.File]::Delete($fixture) } }
+$fixtureDir = Join-Path ([IO.Path]::GetTempPath()) ('codex-tasks-' + [Guid]::NewGuid().ToString('N'))
+try {
+    [IO.Directory]::CreateDirectory($fixtureDir) | Out-Null
+    function Read-Host { param($Prompt) $answer = $script:answers[0]; $script:answers = @($script:answers | Select-Object -Skip 1); return $answer }
+    $script:answers = @('')
+    if (Select-ExternalTasksDirectory '' $true) { throw 'New installs must default to disabled' }
+    $script:answers = @('')
+    if ((Select-ExternalTasksDirectory $fixtureDir $true) -ne $fixtureDir) { throw 'Upgrade lost the previous tasks directory' }
+    if ((Select-ExternalTasksDirectory $fixtureDir $false) -ne $fixtureDir) { throw 'Noninteractive upgrade lost the previous tasks directory' }
+    $script:answers = @('n')
+    if (Select-ExternalTasksDirectory $fixtureDir $true) { throw 'Explicit opt-out was ignored' }
+    $script:answers = @('y', $fixtureDir)
+    if ((Select-ExternalTasksDirectory '' $true) -ne $fixtureDir) { throw 'Existing directory was rejected' }
+    $script:answers = @('y', (Join-Path $fixtureDir 'missing'))
+    $rejected = $false; try { Select-ExternalTasksDirectory '' $true | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'A missing tasks directory was accepted' }
+} finally { Remove-Item Function:\Read-Host -ErrorAction SilentlyContinue; [IO.Directory]::Delete($fixtureDir) }
 Write-Output 'Installer parser and callback preservation passed'

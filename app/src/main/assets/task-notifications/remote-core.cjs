@@ -7,12 +7,17 @@ const goals=require('./remote-goal.cjs');
 const optionsProtocol=require('./remote-options.cjs');
 const uploads=require('./remote-attachments.cjs');
 const images=require('./conversation-images.cjs');
+const remoteAgents=require('./remote-agents.cjs');
+const backgroundTasks=require('./background-tasks.cjs');
+const ocxOverview=require('./ocx-overview.cjs');
+const {Rollouts}=require('./rollout-reader.cjs');
 const {LIVE_FLUSH_MS,WATCH_POLL_MS}=require('./remote-stream.cjs');
 const {LiveWatch,liveTail,reconcileSnapshot}=require('./live-watch.cjs');
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid=value=>typeof value==='string'&&UUID.test(value);
 const hash=s=>crypto.createHash('sha256').update(s).digest('hex');
 const bounded=(s,n)=>Buffer.from(String(s||'')).subarray(0,n).toString('utf8').replace(/\uFFFD$/,'');
+const hostActions=['agents','agent_read','agent_stop','tasks','task_stop','ocx_overview'];
 function providerFailure(error){
   const info=error?.codexErrorInfo;
   const kind=typeof info==='string'?info:Object.keys(info||{})[0];
@@ -76,7 +81,12 @@ function validInputAnswers(input,answers){
 }
 function validateCommand(c,host,now=Date.now()){
   return !!(c&&typeof c==='object'&&!Array.isArray(c)&&isUuid(c.id)&&c.host_id===host&&isUuid(c.thread_id)&&c.conversation_id===hash(c.thread_id)&&
-    ['compact','send','create','stop','approve','answer_input','status','models','threads','read','history','activities','rename','archive','unarchive','fork','queue','steer','cancel_queue','presence','session_info','skills','image','file',...goals.ACTIONS].includes(c.action)&&goals.validGoalCommand(c)&&Number.isSafeInteger(c.issued_at)&&now-c.issued_at<=120000&&c.issued_at-now<=15000&&
+    ['compact','send','create','stop','approve','answer_input','status','models','threads','read','history','activities','rename','archive','unarchive','fork','queue','steer','cancel_queue','presence','session_info','skills','image','file',...hostActions,...goals.ACTIONS].includes(c.action)&&goals.validGoalCommand(c)&&Number.isSafeInteger(c.issued_at)&&now-c.issued_at<=120000&&c.issued_at-now<=15000&&
+    (!hostActions.includes(c.action)||c.thread_id===host&&c.baseline_turn===c.action)&&
+    (!['agents','agent_stop'].includes(c.action)||isUuid(c.read_thread_id))&&
+    (c.action!=='agent_read'||c.mode==='subagent'&&isUuid(c.read_thread_id)||c.mode==='task'&&typeof c.target_id==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(c.target_id))&&
+    (c.action!=='task_stop'||typeof c.target_id==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(c.target_id))&&
+    (c.action!=='agent_stop'||typeof c.expected_turn_id==='string'&&c.expected_turn_id.length>0&&c.expected_turn_id.length<=128)&&
     (!['send','create','queue','steer'].includes(c.action)||(typeof c.text==='string'&&c.text.trim()&&Buffer.byteLength(c.text)<=16384&&typeof c.baseline_turn==='string'&&c.baseline_turn.length<=128))&&
     (!['queue','steer'].includes(c.action)||typeof c.expected_turn_id==='string'&&c.expected_turn_id.length>0&&c.expected_turn_id.length<=128)&&
     (c.action!=='cancel_queue'||isUuid(c.queue_id))&&
@@ -88,7 +98,7 @@ function validateCommand(c,host,now=Date.now()){
     (!['read','history','activities','rename','archive','unarchive'].includes(c.action)||isUuid(c.read_thread_id))&&
     (c.action!=='fork'||c.read_thread_id===c.thread_id&&typeof c.expected_turn_id==='string'&&c.expected_turn_id.length>0&&c.expected_turn_id.length<=128)&&
     (c.watch===undefined||typeof c.watch==='boolean'&&(!c.watch||c.action==='read'))&&
-    (c.mode===undefined||['','default','plan'].includes(c.mode))&&
+    (c.mode===undefined||['','default','plan'].includes(c.mode)||c.action==='agent_read'&&['subagent','task'].includes(c.mode))&&
     (c.stream_version===undefined||c.stream_version===0||c.stream_version===1)&&
     (c.permission===undefined||optionsProtocol.PERMISSIONS.includes(c.permission))&&
     (c.action!=='create'||c.objective===undefined||c.objective===''||typeof c.objective==='string'&&c.objective.trim()&&Array.from(c.objective).length<=4000&&Buffer.byteLength(c.objective)<=16384&&!c.attachments?.length)&&
@@ -99,7 +109,7 @@ function validateCommand(c,host,now=Date.now()){
     (c.archived===undefined||typeof c.archived==='boolean')&&
     (c.search===undefined||typeof c.search==='string'&&Buffer.byteLength(c.search)<=240&&!/[\r\n\0]/.test(c.search))&&
     ['model','effort'].every(k=>c[k]===undefined||(typeof c[k]==='string'&&c[k].length<=128&&!/[\r\n\0]/.test(c[k])))&&
-    (['compact','send','create','models','threads','read','history','activities','rename','archive','unarchive','fork','presence','session_info','skills','image','file',...goals.ACTIONS].includes(c.action)||isUuid(c.target_id))&&(c.action!=='approve'||(isUuid(c.approval_id)&&typeof c.allow==='boolean'&&typeof c.expected_turn_id==='string'&&c.expected_turn_id.length>0&&c.expected_turn_id.length<=128)));
+    (['compact','send','create','models','threads','read','history','activities','rename','archive','unarchive','fork','presence','session_info','skills','image','file',...hostActions,...goals.ACTIONS].includes(c.action)||isUuid(c.target_id))&&(c.action!=='approve'||(isUuid(c.approval_id)&&typeof c.allow==='boolean'&&typeof c.expected_turn_id==='string'&&c.expected_turn_id.length>0&&c.expected_turn_id.length<=128)));
 }
 function normalizeModels(models){
   const seen=new Set();return models.filter(m=>!m.hidden&&typeof m.model==='string'&&m.model.length<=128&&
@@ -163,8 +173,9 @@ async function checkNativeBaseline(client,c,local){
 const activity=require('./remote-activity.cjs');
 const unresolvedStatus=status=>!status||['unknown','accepted','running','approval','input_required','compacting','queued'].includes(status);
 class RemoteController{
-  constructor({directory,key,hostId,clientFactory,resolve,emit,recover,readLocal,readRevision,readContext,endpoint,imageFetch,questionFactory}){
+  constructor({directory,key,hostId,clientFactory,resolve,emit,recover,readLocal,readRevision,readContext,endpoint,imageFetch,questionFactory,config={},processAdapter,taskWaitMs=15000,ocxRunner}){
     Object.assign(this,{directory,key,hostId,clientFactory,resolve,emit,recover,readLocal,readRevision,readContext,endpoint,imageFetch,questionFactory});this.active=null;this.seq=Date.now();
+    this.config=config;this.rollouts=new Rollouts(config.codexHome);this.processAdapter=processAdapter||backgroundTasks.defaultAdapter();this.taskWaitMs=taskWaitMs;this.ocxRunner=ocxRunner;
     this.file=path.join(directory,'remote-journal.json');this.journal={};
     try{this.journal=JSON.parse(fs.readFileSync(this.file,'utf8'));}catch{}
     this.seq=Math.max(this.seq,...Object.values(this.journal).map(r=>Number.isSafeInteger(r.seq)?r.seq:0));
@@ -510,6 +521,33 @@ class RemoteController{
   }
   async handle(c){
     if(!validateCommand(c,this.hostId))return;
+    if(hostActions.includes(c.action)){
+      const status=c.action==='agent_read'?'snapshot':c.action;
+      if(['agent_stop','task_stop'].includes(c.action)&&this.journal[c.id]){
+        const old=this.journal[c.id];if(old.thread_id!==c.thread_id||old.action&&old.action!==c.action)return;
+        if(old.status==='unknown'&&old.action===c.action){const error=old.error||('STOP_'+(c.action==='agent_stop'?'FAILED':'UNVERIFIED'));delete old.error;await this.update(c,c.action,{error});}
+        else await this.replay(c,c.id);return;
+      }
+      const base={id:crypto.randomUUID(),request_id:c.id,host_id:this.hostId,thread_id:c.thread_id,conversation_id:c.conversation_id,status,seq:++this.seq,at:Date.now(),reply:''};
+      try{
+        if(['agent_stop','task_stop'].includes(c.action)){this.journal[c.id]={status:'unknown',thread_id:c.thread_id,action:c.action,error:c.action==='agent_stop'?'STOP_FAILED':'STOP_UNVERIFIED'};this.persist();}
+        const result=c.action==='agents'?await remoteAgents.list(this,c.read_thread_id):c.action==='agent_stop'?await remoteAgents.stop(this,c.read_thread_id,c.expected_turn_id):
+          c.action==='tasks'?backgroundTasks.list(this):c.action==='task_stop'?await backgroundTasks.stop(this,c.target_id):c.action==='ocx_overview'?{overview:await ocxOverview.overview(this)}:
+          c.mode==='subagent'?await remoteAgents.read(this,c.read_thread_id):backgroundTasks.read(this,c.target_id);
+        Object.assign(base,result);
+      }catch(e){const known=['INVALID_THREAD','AGENTS_UNAVAILABLE','TASK_NOT_FOUND','ROLLOUT_UNAVAILABLE','SHARED_REQUIRED','STALE_ACTIVE_TURN','STOP_FAILED','TASKS_DISABLED','STOP_UNVERIFIED','STOP_TIMEOUT','OCX_UNAVAILABLE'];base.error=known.includes(e.message)?e.message:c.action==='agents'?'AGENTS_UNAVAILABLE':c.action==='agent_stop'?'STOP_FAILED':c.action==='task_stop'?'STOP_UNVERIFIED':c.action==='tasks'?'TASKS_DISABLED':c.action==='ocx_overview'?'OCX_UNAVAILABLE':'ROLLOUT_UNAVAILABLE';}
+      const size=()=>Buffer.byteLength(JSON.stringify(base));
+      if(size()>196608){
+        base.partial=true;const lists=[[base,'agents',false],[base,'tasks',false],[base.overview,'requests',false],[base.overview,'accounts',false],[base.snapshot,'messages',true],[base.snapshot,'activities',true]];
+        for(const [holder,key,keepTail] of lists){if(size()<=196608)break;const all=holder?.[key];if(!Array.isArray(all)||!all.length)continue;
+          if(holder===base.snapshot)holder.truncated=true;holder[key]=[];if(size()>196608)continue;
+          let low=0,high=all.length;while(low<high){const mid=Math.ceil((low+high)/2);holder[key]=keepTail?all.slice(-mid):all.slice(0,mid);if(size()<=196608)low=mid;else high=mid-1;}
+          holder[key]=low?(keepTail?all.slice(-low):all.slice(0,low)):[];
+        }
+        if(size()>196608)throw Error('EVENT_TOO_LARGE');
+      }
+      if(['agent_stop','task_stop'].includes(c.action)){delete this.journal[c.id].error;const {id,request_id,host_id,thread_id,conversation_id,status,seq,at,...extra}=base;await this.update(c,status,extra);}else await this.emit(base);return;
+    }
     if(c.action==='compact'){await this.compact(c);return;}
     if(c.action==='answer_input'&&(await this.answerActiveDesktopInput(c)||await this.answerWatchInput(c)))return;
     if(goals.ACTIONS.includes(c.action)){await goals.handleGoal(this,c);return;}
@@ -566,8 +604,10 @@ class RemoteController{
     }
     if(c.action==='read'&&c.watch){await this.startWatching(c);return;}
     if(c.action==='presence'){
+      const capabilities=['agents'];if(backgroundTasks.safeDir(this.config))capabilities.push('tasks');
+      try{await ocxOverview.overview(this);capabilities.push('ocx_overview');}catch{}
       await this.emit({id:crypto.randomUUID(),request_id:c.id,host_id:this.hostId,thread_id:c.thread_id,conversation_id:c.conversation_id,
-        status:'presence',seq:++this.seq,at:Date.now(),reply:'',host_name:bounded(require('node:os').hostname(),160)});return;
+        status:'presence',seq:++this.seq,at:Date.now(),reply:'',host_name:bounded(require('node:os').hostname(),160),capabilities});return;
     }
     if(['threads','read','history','activities','rename','archive','unarchive','fork'].includes(c.action)){
       const managing=['rename','archive','unarchive','fork'].includes(c.action);
