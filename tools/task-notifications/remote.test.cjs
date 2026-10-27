@@ -60,6 +60,26 @@ test('state retention keeps current and unresolved requests and removes the olde
  }finally{controller.close();f.cleanup();}
 });
 
+test('remote pipe lease handles empty and stale PID files and respects a live legacy bridge',async()=>{
+ const {acquireRemoteLease}=require('../../app/src/main/assets/task-notifications/remote.cjs');
+ const f=fixture(),lock=path.join(f.dir,'remote.lock'),checked=[];
+ const alive=pid=>{checked.push(pid);return pid===12345;};
+ try{
+  fs.writeFileSync(lock,'12345');
+  assert.equal(await acquireRemoteLease(f.dir,{isAlive:alive}),null);
+  assert.equal(fs.readFileSync(lock,'utf8'),'12345');
+  fs.writeFileSync(lock,'');
+  const first=await acquireRemoteLease(f.dir,{isAlive:alive});assert.ok(first);
+  assert.equal(fs.readFileSync(lock,'utf8'),String(process.pid));
+  assert.equal(await acquireRemoteLease(f.dir,{isAlive:alive}),null);
+  assert.equal(checked.includes(0),false);
+  await first.close();
+  fs.writeFileSync(lock,'99999');
+  const second=await acquireRemoteLease(f.dir,{isAlive:alive});assert.ok(second);
+  await second.close();assert.equal(fs.existsSync(lock),false);
+ }finally{f.cleanup();}
+});
+
 test('archive is acknowledged while a catalog read is busy, and concurrent mutations receive a bounded rejection',async()=>{
  const f=fixture(),events=[],calls=[];let release,entered;
  const started=new Promise(r=>entered=r);

@@ -5,6 +5,8 @@ const {createCodexClient}=require('./codex-client.cjs');
 const {compactFrame,SENDER_IDLE_MS,livePublishInterval,StreamResetTracker}=require('./remote-stream.cjs');
 const {validEndpoint}=require('./notify.cjs');
 const {readSnapshot,readLatestSnapshot,rolloutRevision}=require('./task-content.cjs');
+const {acquireSupervisor}=require('./shared-server.cjs');
+const crypto=require('node:crypto'),os=require('node:os');
 const wait=(ms,signal)=>new Promise(resolve=>{
   if(signal?.aborted){resolve();return;}
   const finish=()=>{clearTimeout(timer);signal?.removeEventListener('abort',finish);resolve();};
@@ -168,14 +170,36 @@ async function downloadCommand(base,row,key,fetchImpl=fetch){
   const chunks=[];let size=0;for await(const chunk of res.body){size+=chunk.length;if(size>196636)return null;chunks.push(chunk);}
   return decode('command',{...wire,encrypted:Buffer.concat(chunks).toString('base64')},key);
 }
+function remoteLockName(directory){
+  const canonical=path.resolve(directory).replace(/\\/g,'/').toLowerCase();
+  const suffix=crypto.createHash('sha256').update(canonical).digest('hex').slice(0,32);
+  return process.platform==='win32'?'\\\\.\\pipe\\codex-link-remote-'+suffix:path.join(os.tmpdir(),'codex-link-remote-'+suffix+'.sock');
+}
+async function acquireRemoteLease(directory,{isAlive=pid=>{try{process.kill(pid,0);return true;}catch(e){return e.code==='EPERM';}}}={}){
+  const pipe=await acquireSupervisor(remoteLockName(directory));if(!pipe)return null;
+  const lock=path.join(directory,'remote.lock');let fd;
+  try{
+    let pidText='';
+    try{pidText=fs.readFileSync(lock,'utf8').trim();}catch(e){if(e.code!=='ENOENT')throw e;}
+    const pid=/^[1-9]\d*$/.test(pidText)?Number(pidText):0;
+    if(Number.isSafeInteger(pid)&&pid>0&&isAlive(pid)){pipe.close();return null;}
+    try{fs.unlinkSync(lock);}catch(e){if(e.code!=='ENOENT')throw e;}
+    // Keep a legacy-compatible PID file as well: an older bridge launched after an
+    // upgrade must still see the new bridge, while the pipe is the primary lease.
+    fd=fs.openSync(lock,'wx');fs.writeFileSync(fd,String(process.pid));
+    return {close(){
+      try{fs.closeSync(fd);}catch{}
+      try{if(fs.readFileSync(lock,'utf8')===String(process.pid))fs.unlinkSync(lock);}catch{}
+      return new Promise(resolve=>pipe.close(resolve));
+    }};
+  }catch{if(fd!==undefined)try{fs.closeSync(fd);}catch{}pipe.close();return null;}
+}
 async function main(directory=__dirname){
   const file=path.join(directory,'connection.json');let config;
   try{config=JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));}catch{return;}
   if(!config.remoteEnabled||!config.contentKey||!config.remoteHostId||!validEndpoint(config.endpoint))return;
   if(!config.appServerUrl)try{config.codexExecutable=require('./native-runtime.cjs').resolveNativeExecutable(config.codexExecutable);}catch{return;}
-  // Per-host single process lease; stale PIDs are reclaimed after restart, never by age alone.
-  const lock=path.join(directory,'remote.lock');try{const pid=Number(fs.readFileSync(lock,'utf8'));process.kill(pid,0);return;}catch{}
-  let lease;try{fs.unlinkSync(lock);}catch{}try{lease=fs.openSync(lock,'wx');fs.writeFileSync(lease,String(process.pid));}catch{return;}
+  const lease=await acquireRemoteLease(directory);if(!lease)return;
   const abort=new AbortController(),outbox=new Map(),resets=new StreamResetTracker(),health=createHealth(directory);let closing=false;
   health.update({});
   const events=eventTopic(config.endpoint,config.contentKey,config.remoteHostId),commands=commandTopic(config.endpoint,config.contentKey,config.remoteHostId);
@@ -201,7 +225,7 @@ async function main(directory=__dirname){
       status:'thread_activity',seq:++controller.seq,at:row.at,reply:'',turn_id:row.turn,activity_running:row.running,activity_completed:row.completed}),
     onCompletion:async(payload,file,end)=>{const notify=require('./notify.cjs');notify.enqueueCompletion(config,directory,payload,file,end);await notify.main(['--drain'],directory);}
   });
-  const shutdown=()=>{if(closing)return;closing=true;health.update({connected:false});activityWatcher.close();dispatcher.close();receipts.close();abort.abort();controller.close();fs.closeSync(lease);try{if(fs.readFileSync(lock,'utf8')===String(process.pid))fs.unlinkSync(lock);}catch{}};
+  const shutdown=()=>{if(closing)return;closing=true;health.update({connected:false});activityWatcher.close();dispatcher.close();receipts.close();abort.abort();controller.close();lease.close();};
   process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);
   const monitor=setInterval(()=>{try{const latest=JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));
     if(!latest.remoteEnabled||latest.contentKey!==config.contentKey||latest.remoteHostId!==config.remoteHostId||latest.endpoint!==config.endpoint||latest.appServerUrl!==config.appServerUrl)shutdown();
@@ -232,4 +256,4 @@ async function main(directory=__dirname){
   finally{clearInterval(monitor);shutdown();await Promise.all([sender,receipts.idle()]);}
 }
 if(require.main===module)main().catch(()=>{process.exitCode=1;});
-module.exports={main,publishEvent,readStream,downloadCommand,createHealth,transportFailure,subscribeCommands,CommandDispatcher,SteerReceiptPublisher,retryDelay,pruneOutbox};
+module.exports={main,publishEvent,readStream,downloadCommand,createHealth,transportFailure,subscribeCommands,CommandDispatcher,SteerReceiptPublisher,retryDelay,pruneOutbox,acquireRemoteLease};
