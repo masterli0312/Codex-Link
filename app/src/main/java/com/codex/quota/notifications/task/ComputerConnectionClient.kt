@@ -67,7 +67,8 @@ class ComputerConnectionClient(context: Context) {
                 val source = it.body?.source() ?: run { close(); return }
                 try {
                     while (!source.exhausted()) {
-                        val row = runCatching { Json.parseToJsonElement(source.readUtf8LineStrict(40_000)).jsonObject }.getOrNull() ?: continue
+                        val line = source.readUtf8LineStrict(40_000)
+                        val row = parsePresenceRow(line) ?: continue
                         if (row["event"]?.jsonPrimitive?.content != "message") continue
                         val wire = runCatching { Json.parseToJsonElement(row["message"]!!.jsonPrimitive.content).jsonObject }.getOrNull() ?: continue
                         val event = RemoteProtocol.event(wire, key) ?: continue
@@ -80,3 +81,6 @@ class ComputerConnectionClient(context: Context) {
         awaitClose { call.cancel() }
     }
 }
+
+internal fun parsePresenceRow(line: String): JsonObject? =
+    try { Json.parseToJsonElement(line).jsonObject } catch (_: IllegalArgumentException) { null }
