@@ -26,6 +26,7 @@ class TaskNotificationStore(private val context: Context) {
 
     fun saveEndpoint(endpoint: String) {
         require(TaskNotificationProtocol.normalizeEndpoint(endpoint) == endpoint)
+        if (read().endpoint == endpoint) return
         val current = TaskNotificationProtocol.normalizeEndpoint(read().endpoint)
         if (current != null && current != endpoint) {
             val old = current.toHttpUrl()
