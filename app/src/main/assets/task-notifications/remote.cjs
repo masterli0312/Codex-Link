@@ -179,9 +179,13 @@ async function acquireRemoteLease(directory,{isAlive=pid=>{try{process.kill(pid,
   const pipe=await acquireSupervisor(remoteLockName(directory));if(!pipe)return null;
   const lock=path.join(directory,'remote.lock');let fd;
   try{
-    let pidText='';
-    try{pidText=fs.readFileSync(lock,'utf8').trim();}catch(e){if(e.code!=='ENOENT')throw e;}
-    const pid=/^[1-9]\d*$/.test(pidText)?Number(pidText):0;
+    const readPid=()=>{try{return fs.readFileSync(lock,'utf8').trim();}catch(e){if(e.code==='ENOENT')return null;throw e;}};
+    let pidText=readPid();
+    if(pidText!==null&&!/^[1-9]\d*$/.test(pidText)){
+      // A legacy process may have opened the file but not written its PID yet.
+      await new Promise(resolve=>setTimeout(resolve,250));pidText=readPid();
+    }
+    const pid=pidText&&/^[1-9]\d*$/.test(pidText)?Number(pidText):0;
     if(Number.isSafeInteger(pid)&&pid>0&&isAlive(pid)){pipe.close();return null;}
     try{fs.unlinkSync(lock);}catch(e){if(e.code!=='ENOENT')throw e;}
     // Keep a legacy-compatible PID file as well: an older bridge launched after an

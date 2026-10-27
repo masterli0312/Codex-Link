@@ -83,6 +83,10 @@ test('remote pipe lease handles empty and stale PID files and respects a live le
   assert.equal(await acquireRemoteLease(f.dir,{isAlive:alive}),null);
   assert.equal(fs.readFileSync(lock,'utf8'),'12345');
   fs.writeFileSync(lock,'');
+  setTimeout(()=>fs.writeFileSync(lock,'12345'),20);
+  assert.equal(await acquireRemoteLease(f.dir,{isAlive:alive}),null);
+  assert.equal(fs.readFileSync(lock,'utf8'),'12345');
+  fs.writeFileSync(lock,'');
   const first=await acquireRemoteLease(f.dir,{isAlive:alive});assert.ok(first);
   assert.equal(fs.readFileSync(lock,'utf8'),String(process.pid));
   assert.equal(await acquireRemoteLease(f.dir,{isAlive:alive}),null);
