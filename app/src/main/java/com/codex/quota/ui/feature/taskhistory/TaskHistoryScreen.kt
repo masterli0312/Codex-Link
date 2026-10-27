@@ -529,7 +529,7 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
         downloading = true; downloadError = false
         scope.launch {
             try {
-                val snapshot = NtfyTaskClient().downloadSnapshot(computer.endpoint, TaskAttachment(url, 0, current.attachmentExpiresAt), computer.key, current.identity)
+                val snapshot = historyTaskClient(context).downloadSnapshot(computer.endpoint, TaskAttachment(url, 0, current.attachmentExpiresAt), computer.key, current.identity)
                 if (snapshot == null) downloadError = true else withContext(Dispatchers.IO) { inbox.replaceExisting(current.copy(snapshot = snapshot, hasFullSnapshot = true)) }
             } finally { downloading = false }
         }
