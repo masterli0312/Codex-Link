@@ -191,8 +191,10 @@ class CodexAccountRepositoryImpl(
                     val usage = (if (account.isDemoAccount) mockDataSource else realDataSource).fetchUsage(account, newApiKey).getOrThrow()
                     check(usage.status == AuthStatus.AUTHENTICATED) { usage.errorMessage ?: "AUTHENTICATION_FAILED" }
                     check(credentialStore.getApiKey(accountId) == previousKey) { "Account credentials changed" }
+                    val savedUsage = saveFetchedUsage(account, usage)
+                    check(credentialStore.getApiKey(accountId) == previousKey) { "Account credentials changed" }
                     credentialStore.storeApiKey(accountId, newApiKey)
-                    saveFetchedUsage(account, usage)
+                    savedUsage
                 } finally { refreshing.update { it - accountId } }
             }.let { Result.success(it) }
         } catch (cancelled: CancellationException) { throw cancelled }

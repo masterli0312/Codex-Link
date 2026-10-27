@@ -145,6 +145,28 @@ class CodexAccountRepositoryTest {
         assertEquals("demo-new", fakeCredentialStore.getApiKey(account.id))
     }
 
+    @Test fun reloginKeepsOriginalCredentialsIfSavingValidatedUsageFails() = runTest {
+        io.mockk.mockkObject(com.codex.quota.auth.JwtTokenParser)
+        try {
+            io.mockk.every { com.codex.quota.auth.JwtTokenParser.parseToken(any()) } returns
+                com.codex.quota.auth.DecodedTokenInfo("same@test.org", "user", null)
+            var failSave = false
+            val source = object : CodexAccountDataSource {
+                override suspend fun fetchUsage(account: CodexAccount, apiKey: String) =
+                    Result.success(CodexUsage.empty(account.id, AuthStatus.AUTHENTICATED))
+            }
+            val repo = CodexAccountRepositoryImpl(fakeAccountDao, fakeUsageDao, fakeCredentialStore,
+                realDataSource = source, onUsageRefreshed = { if (failSave) error("storage unavailable") })
+            val account = repo.addAccount("Personal", "same@test.org", "old", PlanType.PLUS, null, "#123456",
+                oauthRefreshToken = "refresh", oauthClientId = "client").getOrThrow()
+            failSave = true
+            assertTrue(repo.reauthenticateAccount(account.id, "new").isFailure)
+            assertEquals("old", fakeCredentialStore.getApiKey(account.id))
+            assertEquals("refresh", fakeCredentialStore.getRefreshToken(account.id))
+            assertEquals("client", fakeCredentialStore.getOAuthClientId(account.id))
+        } finally { io.mockk.unmockkObject(com.codex.quota.auth.JwtTokenParser) }
+    }
+
     @Test
     fun oauthAccount_persistsRefreshCredentialAndRemovesItWithAccount() = runTest {
         val account = repository.addAccount(
