@@ -57,6 +57,8 @@ $codexUsageHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env
 
 按脚本提示关闭并从其配置的入口重新启动 Codex。要求 Node.js 22+ 和支持共享 WebSocket 入口的 Codex Desktop。此前已在桌面与手机同一真实线程验证双向续聊；这不是官方承诺长期稳定的桌面设置，升级后可能需要复查。脚本发现其他原生连接配置时停止，不覆盖无关连接。
 
+共享服务由计划任务「Codex Usage shared app server」在登录时及每分钟检查。它先请求 `http://127.0.0.1:18475/readyz`：已有就绪服务直接复用；端口被其他程序占用且未就绪时只在 `shared-server-health.json` 记录 `blocked`，不抢占、不结束该进程；端口空闲才启动原生服务。
+
 停用共享连接：
 
 ```powershell
@@ -99,6 +101,7 @@ $codexUsageHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env
 | --- | --- |
 | 手机登录后没有任务通知 | 先完成电脑配对，确认已运行新的 `setup.cmd`，允许通知和后台运行。 |
 | 对话可读但不能发 | 开启远程对话并更新电脑组件；桌面占用的线程启用共享连接。 |
+| 共享服务状态为 `blocked` | 18475 端口被不响应 `/readyz` 的程序占用。确认占用进程后自行处理；组件不会结束它。 |
 | 电脑在线但收不到回复 | 检查通知服务日额度、网络与组件状态，区分中继连通和电脑响应。 |
 | 锁屏收不到通知 | 检查通知权限、省电、后台运行与强行停止状态；缓存补取受服务期限限制。 |
 | 额度或激活失败但任务通知正常 | 两条网络通道不同，确认手机能访问 OpenAI，必要时切换可用节点。 |

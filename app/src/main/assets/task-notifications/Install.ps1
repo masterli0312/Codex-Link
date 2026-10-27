@@ -222,7 +222,7 @@ if (Test-Path -LiteralPath $connectionFile) {
 Stop-ScheduledTask -TaskName $remoteTaskName -ErrorAction SilentlyContinue
 Stop-OwnRemoteBridge $runtime
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'task-content.cjs') -Destination (Join-Path $runtime 'task-content.cjs') -Force
-foreach ($name in @('remote.cjs', 'remote-core.cjs', 'codex-client.cjs', 'native-runtime.cjs', 'conversation-library.cjs', 'conversation-images.cjs','conversation-files.cjs','conversation-questions.cjs','completion-watch.cjs', 'live-watch.cjs', 'remote-activity.cjs', 'remote-goal.cjs', 'remote-options.cjs', 'remote-stream.cjs', 'remote-attachments.cjs', 'shared-server.cjs', 'Enable-SharedConversations.ps1', 'SettingsFile.ps1')) {
+foreach ($name in @('remote.cjs', 'remote-core.cjs', 'codex-client.cjs', 'native-runtime.cjs', 'conversation-library.cjs', 'conversation-images.cjs','conversation-files.cjs','conversation-questions.cjs','completion-watch.cjs', 'live-watch.cjs', 'remote-activity.cjs', 'remote-goal.cjs', 'remote-options.cjs', 'remote-stream.cjs', 'remote-attachments.cjs', 'shared-server.cjs', 'shared-start-if-needed.cjs', 'Enable-SharedConversations.ps1', 'SettingsFile.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $runtime $name) -Force
 }
 $monitorEnabledAt = [DateTime]::UtcNow.ToString('o')
@@ -260,6 +260,15 @@ if ($remoteEnabled) {
     Start-ScheduledTask -TaskName $remoteTaskName -ErrorAction Stop
     Write-Host 'Remote conversations enabled. Keep this computer on and online. Continue completed threads from new phone notifications.'
 } else { Unregister-ScheduledTask -TaskName $remoteTaskName -Confirm:$false -ErrorAction SilentlyContinue }
+# A disabled shared-server task leaves the desktop without its configured server after the next logon.
+# Starting it is safe: the supervisor reuses a ready listener and never stops one it did not start.
+if ($settings.appServerUrl) {
+    $sharedTask = Get-ScheduledTask -TaskName 'Codex Usage shared app server' -ErrorAction SilentlyContinue
+    if ($sharedTask) {
+        if ($sharedTask.State -eq 'Disabled') { Enable-ScheduledTask -InputObject $sharedTask | Out-Null }
+        Start-ScheduledTask -TaskName 'Codex Usage shared app server' -ErrorAction SilentlyContinue
+    } else { Write-Host 'Shared conversations are configured but their startup task is missing. Run Enable-SharedConversations.ps1 again.' }
+}
 Write-Host 'Installed. Your original Codex callback is preserved. Restart Codex to activate task notifications.'
 if (-not $NoTest) {
     & $launcherPath $node $scriptPath --test
