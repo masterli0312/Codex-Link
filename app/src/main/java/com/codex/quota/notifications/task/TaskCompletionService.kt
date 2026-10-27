@@ -147,19 +147,20 @@ class TaskCompletionService : Service() {
         if (ref != null && computer.hostId.isNotBlank() && ref.host_id != computer.hostId) return
         val inbox = TaskInbox(this)
         val syncStore = ConversationSyncSelectionStore(this)
-        if (ref != null && event.status in setOf("turn_complete", "task_complete", "review_complete"))
-            syncStore.markActivity(computer, ref.thread_id, ref.baseline_turn, false, event.timeEpochMs, true)
-        val selected = snapshot?.let { ConversationSyncRules.caches(it, computer, syncStore.read(computer)) } == true
-        var record: TaskInboxRecord? = null
-        if (snapshot != null && selected) {
-            val attachment = event.attachment?.takeIf { RelayRouting.attachmentUrl(this, endpoint, it.url) != null }
-            val saved = TaskInboxRecord(inbox.recordId(endpoint, event.deduplicationId), event.timeEpochMs, event.deduplicationId,
-                TaskInbox.hash(endpoint), snapshot, attachment?.url, attachment?.expiresAt ?: 0)
-            record = runCatching { inbox.saveNotification(saved, event.status in setOf("turn_complete", "task_complete", "review_complete")) }.getOrNull()
+        val saved = safelyStoreTaskEvent({
+            if (ref != null && event.status in setOf("turn_complete", "task_complete", "review_complete"))
+                runCatching { syncStore.markActivity(computer, ref.thread_id, ref.baseline_turn, false, event.timeEpochMs, true) }
+            val selected = snapshot?.let { ConversationSyncRules.caches(it, computer, syncStore.read(computer)) } == true
+            if (snapshot != null && selected) {
+                val attachment = event.attachment?.takeIf { RelayRouting.attachmentUrl(this, endpoint, it.url) != null }
+                val saved = TaskInboxRecord(inbox.recordId(endpoint, event.deduplicationId), event.timeEpochMs, event.deduplicationId,
+                    TaskInbox.hash(endpoint), snapshot, attachment?.url, attachment?.expiresAt ?: 0)
+                inbox.saveNotification(saved, event.status in setOf("turn_complete", "task_complete", "review_complete"))
+            } else null
+        }) { record ->
+            // A local cache failure must not suppress an already claimed notification.
+            showEvent(event, snapshot, record?.id, TaskInbox.hash(endpoint))
         }
-        // Show the authenticated inline preview immediately; a file download must not delay the alert.
-        showEvent(event, snapshot, record?.id, TaskInbox.hash(endpoint))
-        val saved = record
         val attachment = event.attachment
         if (saved != null && saved.identity == event.deduplicationId && attachment != null && key != null) scope.launch {
             val full = taskClient.downloadSnapshot(endpoint, attachment, key, event.deduplicationId) ?: return@launch
