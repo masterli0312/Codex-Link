@@ -99,6 +99,46 @@ class CodexAccountRepositoryTest {
         }
     }
 
+    @Test fun apiKeyReloginValidatesIdentityAndNewCredentialBeforeReplacingOAuthTokens() = runTest {
+        io.mockk.mockkObject(com.codex.quota.auth.JwtTokenParser)
+        try {
+            val same = com.codex.quota.auth.DecodedTokenInfo("same@test.org", "user", null)
+            val other = com.codex.quota.auth.DecodedTokenInfo("other@test.org", "other", null)
+            io.mockk.every { com.codex.quota.auth.JwtTokenParser.parseToken(any()) } answers {
+                if (firstArg<String>() == "other") other else same
+            }
+            var validationStatus = AuthStatus.AUTHENTICATED
+            val requestedKeys = mutableListOf<String>()
+            val source = object : CodexAccountDataSource {
+                override suspend fun fetchUsage(account: CodexAccount, apiKey: String): Result<CodexUsage> {
+                    requestedKeys += apiKey
+                    return Result.success(CodexUsage.empty(account.id, validationStatus))
+                }
+            }
+            val repo = CodexAccountRepositoryImpl(fakeAccountDao, fakeUsageDao, fakeCredentialStore,
+                realDataSource = source)
+            val account = repo.addAccount("Personal", "same@test.org", "old", PlanType.PLUS, null, "#123456",
+                oauthRefreshToken = "old-refresh", oauthClientId = "client").getOrThrow()
+            for (status in listOf(AuthStatus.AUTHENTICATION_REQUIRED, AuthStatus.OFFLINE, AuthStatus.TEMPORARY_ERROR)) {
+                validationStatus = status
+                assertTrue(repo.reauthenticateAccount(account.id, "new").isFailure)
+                assertEquals("old", fakeCredentialStore.getApiKey(account.id))
+                assertEquals("old-refresh", fakeCredentialStore.getRefreshToken(account.id))
+                assertEquals("client", fakeCredentialStore.getOAuthClientId(account.id))
+            }
+            validationStatus = AuthStatus.AUTHENTICATED
+            assertTrue(repo.reauthenticateAccount(account.id, "other").isFailure)
+            assertEquals("old", fakeCredentialStore.getApiKey(account.id))
+            assertTrue(repo.reauthenticateAccount(account.id, "new").isSuccess)
+            assertEquals("new", requestedKeys.last())
+            assertEquals("new", fakeCredentialStore.getApiKey(account.id))
+            assertNull(fakeCredentialStore.getRefreshToken(account.id))
+            assertNull(fakeCredentialStore.getOAuthClientId(account.id))
+        } finally {
+            io.mockk.unmockkObject(com.codex.quota.auth.JwtTokenParser)
+        }
+    }
+
     @Test
     fun oauthAccount_persistsRefreshCredentialAndRemovesItWithAccount() = runTest {
         val account = repository.addAccount(

@@ -176,11 +176,27 @@ class CodexAccountRepositoryImpl(
         accountId: String,
         newApiKey: String
     ): Result<CodexUsage> {
-        val account = accountDao.getById(accountId)?.toDomain()
-            ?: return Result.failure(IllegalArgumentException("Account $accountId not found"))
-
-        credentialStore.storeApiKey(accountId, newApiKey)
-        return refreshAccountInternal(account, newApiKey)
+        return try {
+            accountRefreshLocks.getOrPut(accountId) { Mutex() }.withLock {
+                refreshing.update { it + accountId }
+                try {
+                    val account = accountDao.getById(accountId)?.toDomain() ?: error("ACCOUNT_MISSING")
+                    require(!account.isDemoAccount && newApiKey.isNotBlank())
+                    val previousKey = credentialStore.getApiKey(accountId)
+                    require(com.codex.quota.auth.AccountReauthenticationRules.sameAccount(
+                        previousKey?.let(JwtTokenParser::parseToken), account.email, JwtTokenParser.parseToken(newApiKey)
+                    )) { "ACCOUNT_IDENTITY_MISMATCH" }
+                    // Validate this exact token, without the existing account's OAuth refresh
+                    // provider substituting the old credential or changing its refresh token.
+                    val usage = realDataSource.fetchUsage(account, newApiKey).getOrThrow()
+                    check(usage.status == AuthStatus.AUTHENTICATED) { usage.errorMessage ?: "AUTHENTICATION_FAILED" }
+                    check(credentialStore.getApiKey(accountId) == previousKey) { "Account credentials changed" }
+                    credentialStore.storeApiKey(accountId, newApiKey)
+                    saveFetchedUsage(account, usage)
+                } finally { refreshing.update { it - accountId } }
+            }.let { Result.success(it) }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (e: Exception) { Result.failure(e) }
     }
 
     override suspend fun reauthenticateOAuthAccount(accountId: String, tokens: com.codex.quota.auth.OAuthTokenResult): Result<CodexAccount> {
@@ -244,6 +260,14 @@ class CodexAccountRepositoryImpl(
 
         return if (result.isSuccess) {
             val usage = result.getOrThrow()
+            Result.success(saveFetchedUsage(account, usage))
+        } else {
+            val exception = result.exceptionOrNull() ?: Exception("Unknown sync error")
+            Result.failure(exception)
+        }
+    }
+
+    private suspend fun saveFetchedUsage(account: CodexAccount, usage: CodexUsage): CodexUsage {
             val savedUsage = if (usage.status == AuthStatus.TEMPORARY_ERROR || usage.status == AuthStatus.OFFLINE) {
                 val previous = usageSnapshotDao.getByAccountId(account.id)?.toDomain()
                 if (previous != null && account.lastSuccessfulSyncEpochMs == previous.fetchedAtEpochMs &&
@@ -268,12 +292,7 @@ class CodexAccountRepositoryImpl(
                 authStatus = usage.status.name,
                 lastSync = lastSync
             )
-            Result.success(savedUsage)
-        } else {
-            val exception = result.exceptionOrNull() ?: Exception("Unknown sync error")
-            val offlineUsage = CodexUsage.empty(account.id, AuthStatus.TEMPORARY_ERROR)
-            Result.failure(exception)
-        }
+            return savedUsage
     }
 
     private suspend fun ensureFreshAccessToken(accountId: String, suppliedKey: String): Result<String> =
