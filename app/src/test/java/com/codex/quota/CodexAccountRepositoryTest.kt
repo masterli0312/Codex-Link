@@ -139,6 +139,12 @@ class CodexAccountRepositoryTest {
         }
     }
 
+    @Test fun demoReloginStillUsesTheSimulatedProvider() = runTest {
+        val account = repository.addAccount("demo", null, "demo-old", PlanType.PLUS, null, "#123456", true).getOrThrow()
+        assertTrue(repository.reauthenticateAccount(account.id, "demo-new").isSuccess)
+        assertEquals("demo-new", fakeCredentialStore.getApiKey(account.id))
+    }
+
     @Test
     fun oauthAccount_persistsRefreshCredentialAndRemovesItWithAccount() = runTest {
         val account = repository.addAccount(

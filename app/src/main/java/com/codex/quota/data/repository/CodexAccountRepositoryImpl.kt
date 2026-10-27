@@ -181,14 +181,14 @@ class CodexAccountRepositoryImpl(
                 refreshing.update { it + accountId }
                 try {
                     val account = accountDao.getById(accountId)?.toDomain() ?: error("ACCOUNT_MISSING")
-                    require(!account.isDemoAccount && newApiKey.isNotBlank())
+                    require(newApiKey.isNotBlank())
                     val previousKey = credentialStore.getApiKey(accountId)
-                    require(com.codex.quota.auth.AccountReauthenticationRules.sameAccount(
-                        previousKey?.let(JwtTokenParser::parseToken), account.email, JwtTokenParser.parseToken(newApiKey)
-                    )) { "ACCOUNT_IDENTITY_MISMATCH" }
+                    if (!account.isDemoAccount) require(com.codex.quota.auth.AccountReauthenticationRules.sameAccount(
+                            previousKey?.let(JwtTokenParser::parseToken), account.email, JwtTokenParser.parseToken(newApiKey)
+                        )) { "ACCOUNT_IDENTITY_MISMATCH" }
                     // Validate this exact token, without the existing account's OAuth refresh
                     // provider substituting the old credential or changing its refresh token.
-                    val usage = realDataSource.fetchUsage(account, newApiKey).getOrThrow()
+                    val usage = (if (account.isDemoAccount) mockDataSource else realDataSource).fetchUsage(account, newApiKey).getOrThrow()
                     check(usage.status == AuthStatus.AUTHENTICATED) { usage.errorMessage ?: "AUTHENTICATION_FAILED" }
                     check(credentialStore.getApiKey(accountId) == previousKey) { "Account credentials changed" }
                     credentialStore.storeApiKey(accountId, newApiKey)
