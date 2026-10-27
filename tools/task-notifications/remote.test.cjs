@@ -78,24 +78,40 @@ test('remote pipe lease handles empty and stale PID files and respects a live le
  const {acquireRemoteLease}=require('../../app/src/main/assets/task-notifications/remote.cjs');
  const f=fixture(),lock=path.join(f.dir,'remote.lock'),checked=[];
  const alive=pid=>{checked.push(pid);return pid===12345;};
+ const legacy=()=>true;
  try{
   fs.writeFileSync(lock,'12345');
-  assert.equal(await acquireRemoteLease(f.dir,{isAlive:alive}),null);
+  assert.equal(await acquireRemoteLease(f.dir,{isAlive:alive,isLegacyBridge:legacy}),null);
   assert.equal(fs.readFileSync(lock,'utf8'),'12345');
   fs.writeFileSync(lock,'');
   setTimeout(()=>fs.writeFileSync(lock,'12345'),20);
-  assert.equal(await acquireRemoteLease(f.dir,{isAlive:alive}),null);
+  assert.equal(await acquireRemoteLease(f.dir,{isAlive:alive,isLegacyBridge:legacy}),null);
   assert.equal(fs.readFileSync(lock,'utf8'),'12345');
   fs.writeFileSync(lock,'');
-  const first=await acquireRemoteLease(f.dir,{isAlive:alive});assert.ok(first);
+  const first=await acquireRemoteLease(f.dir,{isAlive:alive,isLegacyBridge:legacy});assert.ok(first);
   assert.equal(fs.readFileSync(lock,'utf8'),String(process.pid));
-  assert.equal(await acquireRemoteLease(f.dir,{isAlive:alive}),null);
+  assert.equal(await acquireRemoteLease(f.dir,{isAlive:alive,isLegacyBridge:legacy}),null);
   assert.equal(checked.includes(0),false);
   await first.close();
   fs.writeFileSync(lock,'99999');
-  const second=await acquireRemoteLease(f.dir,{isAlive:alive});assert.ok(second);
+  const second=await acquireRemoteLease(f.dir,{isAlive:alive,isLegacyBridge:legacy});assert.ok(second);
   await second.close();assert.equal(fs.existsSync(lock),false);
+  fs.writeFileSync(lock,'12345');
+  const reusedPid=await acquireRemoteLease(f.dir,{isAlive:alive,isLegacyBridge:()=>false});
+  assert.ok(reusedPid);await reusedPid.close();
+  fs.writeFileSync(lock,'12345');
+  assert.equal(await acquireRemoteLease(f.dir,{isAlive:alive,isLegacyBridge:()=>null}),null);
  }finally{f.cleanup();}
+});
+test('a reused PID only protects a matching legacy bridge command',()=>{
+ const {matchesLegacyBridge}=require('../../app/src/main/assets/task-notifications/remote.cjs');
+ const dir='C:\\Fixture (x)\\remote';
+ assert.equal(matchesLegacyBridge({Name:'node.exe',CommandLine:'node.exe "C:\\Fixture (x)\\remote\\remote.cjs"'},dir),true);
+ assert.equal(matchesLegacyBridge({Name:'node.exe',CommandLine:'node.exe "C:\\Fixture (x)\\remote\\remote.cjs.bak"'},dir),false);
+ assert.equal(matchesLegacyBridge({Name:'other.exe',CommandLine:'other.exe "C:\\Fixture (x)\\remote\\remote.cjs"'},dir),false);
+ assert.equal(matchesLegacyBridge({Name:'node.exe',CommandLine:'node.exe C:\\other\\remote.cjs'},dir),false);
+ assert.equal(matchesLegacyBridge({Name:'node.exe',CommandLine:null},dir),null);
+ assert.equal(matchesLegacyBridge({Name:null},dir),null);
 });
 
 test('archive is acknowledged while a catalog read is busy, and concurrent mutations receive a bounded rejection',async()=>{

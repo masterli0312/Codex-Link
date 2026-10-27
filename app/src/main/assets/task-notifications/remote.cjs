@@ -7,6 +7,7 @@ const {validEndpoint}=require('./notify.cjs');
 const {readSnapshot,readLatestSnapshot,rolloutRevision}=require('./task-content.cjs');
 const {acquireSupervisor}=require('./shared-server.cjs');
 const crypto=require('node:crypto'),os=require('node:os');
+const {spawnSync}=require('node:child_process');
 const wait=(ms,signal)=>new Promise(resolve=>{
   if(signal?.aborted){resolve();return;}
   const finish=()=>{clearTimeout(timer);signal?.removeEventListener('abort',finish);resolve();};
@@ -175,7 +176,24 @@ function remoteLockName(directory){
   const suffix=crypto.createHash('sha256').update(canonical).digest('hex').slice(0,32);
   return process.platform==='win32'?'\\\\.\\pipe\\codex-link-remote-'+suffix:path.join(os.tmpdir(),'codex-link-remote-'+suffix+'.sock');
 }
-async function acquireRemoteLease(directory,{isAlive=pid=>{try{process.kill(pid,0);return true;}catch(e){return e.code==='EPERM';}}}={}){
+function matchesLegacyBridge(processInfo,directory){
+  if(!processInfo?.Name)return null;
+  if(String(processInfo.Name).toLowerCase()!=='node.exe')return false;
+  if(!processInfo.CommandLine)return null;
+  const script=path.win32.resolve(directory,'remote.cjs').replace(/\//g,'\\').toLowerCase();
+  const cmd=String(processInfo.CommandLine||'').replace(/\//g,'\\').toLowerCase();
+  const escaped=script.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  return cmd.includes('"'+script+'"')||new RegExp('(?:^|\\s)'+escaped+'(?=\\s|$)').test(cmd);
+}
+function legacyBridgeAlive(pid,directory){
+  if(process.platform!=='win32')return null; // Unknown owners are conservatively retained.
+  const script="$ErrorActionPreference='Stop';$p=Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$env:CODEX_LINK_LOCK_PID);if($p){$p|Select-Object Name,CommandLine|ConvertTo-Json -Compress}else{'null'}";
+  const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{
+    windowsHide:true,encoding:'utf8',timeout:5000,env:{...process.env,CODEX_LINK_LOCK_PID:String(pid)}});
+  if(result.status!==0)return null;
+  try{const info=JSON.parse(result.stdout);return info===null?false:matchesLegacyBridge(info,directory);}catch{return null;}
+}
+async function acquireRemoteLease(directory,{isAlive=pid=>{try{process.kill(pid,0);return true;}catch(e){return e.code==='EPERM';}},isLegacyBridge=legacyBridgeAlive}={}){
   const pipe=await acquireSupervisor(remoteLockName(directory));if(!pipe)return null;
   const lock=path.join(directory,'remote.lock');let fd;
   try{
@@ -186,7 +204,7 @@ async function acquireRemoteLease(directory,{isAlive=pid=>{try{process.kill(pid,
       await new Promise(resolve=>setTimeout(resolve,250));pidText=readPid();
     }
     const pid=pidText&&/^[1-9]\d*$/.test(pidText)?Number(pidText):0;
-    if(Number.isSafeInteger(pid)&&pid>0&&isAlive(pid)){pipe.close();return null;}
+    if(Number.isSafeInteger(pid)&&pid>0&&isAlive(pid)&&isLegacyBridge(pid,directory)!==false){pipe.close();return null;}
     try{fs.unlinkSync(lock);}catch(e){if(e.code!=='ENOENT')throw e;}
     // Keep a legacy-compatible PID file as well: an older bridge launched after an
     // upgrade must still see the new bridge, while the pipe is the primary lease.
@@ -260,4 +278,4 @@ async function main(directory=__dirname){
   finally{clearInterval(monitor);shutdown();await Promise.all([sender,receipts.idle()]);}
 }
 if(require.main===module)main().catch(()=>{process.exitCode=1;});
-module.exports={main,publishEvent,readStream,downloadCommand,createHealth,transportFailure,subscribeCommands,CommandDispatcher,SteerReceiptPublisher,retryDelay,pruneOutbox,acquireRemoteLease};
+module.exports={main,publishEvent,readStream,downloadCommand,createHealth,transportFailure,subscribeCommands,CommandDispatcher,SteerReceiptPublisher,retryDelay,pruneOutbox,acquireRemoteLease,matchesLegacyBridge};
