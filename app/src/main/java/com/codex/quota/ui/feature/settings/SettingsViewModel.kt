@@ -19,6 +19,14 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
+
+internal fun clearPrivateTaskCaches(cacheDirectory: File) {
+    listOf("task-notifications", "conversation-downloads", "conversation-previews").forEach { name ->
+        val directory = File(cacheDirectory, name)
+        check(!directory.exists() || directory.deleteRecursively()) { "Could not clear task cache: $name" }
+    }
+}
 
 class SettingsViewModel(
     private val preferencesRepository: UserPreferencesRepository,
@@ -156,6 +164,7 @@ class SettingsViewModel(
                 TaskNotificationStore(context).clear()
                 TaskCompletionService.stop(context)
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    clearPrivateTaskCaches(context.cacheDir)
                     com.codex.quota.ui.feature.taskhistory.OfflineVoiceInput.clearModels(context)
                 }
                 // Any queued reminder becomes invalid when its account is gone.
