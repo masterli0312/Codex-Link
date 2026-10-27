@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 if (process.platform !== 'win32') throw new Error('Run launcher tests on Windows');
-const output = path.resolve(__dirname, '../../../../output/task-launcher-tests');
+const output = path.resolve(__dirname, '../../build/task-launcher-tests');
 fs.mkdirSync(output, { recursive: true });
 const compiler = ['Framework64', 'Framework'].map(p => path.join(process.env.WINDIR, 'Microsoft.NET', p, 'v4.0.30319', 'csc.exe')).find(fs.existsSync);
 assert.ok(compiler, 'Windows .NET compiler is required');
