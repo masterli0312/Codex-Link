@@ -4,6 +4,7 @@ import com.codex.quota.auth.JwtTokenParser
 import com.codex.quota.data.remote.ResetCreditCode
 import com.codex.quota.data.remote.ResetCreditConsumer
 import com.codex.quota.domain.model.CodexUsage
+import com.codex.quota.domain.model.AuthStatus
 import com.codex.quota.domain.repository.CodexAccountRepository
 import com.codex.quota.domain.repository.ResetOperationStore
 import com.codex.quota.security.CredentialStore
@@ -51,6 +52,7 @@ class ConsumeResetCreditUseCase(
         when (result) {
             ResetCreditCode.RESET, ResetCreditCode.ALREADY_REDEEMED -> {
                 val freshUsage = repository.refreshAccount(accountId).getOrNull()
+                    ?.takeIf { it.status == AuthStatus.AUTHENTICATED }
                 // If refresh fails, keep the operation ID so a second tap cannot spend another credit.
                 if (freshUsage != null) operationStore.clearResetOperationId(accountId, operationId)
                 ResetSpendOutcome.Success(freshUsage, result == ResetCreditCode.ALREADY_REDEEMED)
