@@ -3,7 +3,7 @@ $source = Join-Path $PSScriptRoot '../../app/src/main/assets/task-notifications/
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($source, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw 'Installer syntax error' }
-foreach ($name in @('Read-Notify', 'Get-WrappedNotify', 'Test-OwnNotify', 'Get-PreservedNotify')) {
+foreach ($name in @('Read-Notify', 'Set-Notify', 'Write-NotifyConfiguration', 'Get-WrappedNotify', 'Test-OwnNotify', 'Get-PreservedNotify')) {
     $function = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     Invoke-Expression $function.Extent.Text
 }
@@ -23,4 +23,19 @@ $own = 'C:\fixture\notify.cjs'
 $saved = @('codex-computer-use.exe', 'turn-ended', '--previous-notify', '["node.exe","C:\\fixture\\notify.cjs"]')
 $preserved = Get-PreservedNotify @('node.exe', $own) $own $saved
 if ($preserved.Count -ne 2 -or $preserved[0] -ne 'codex-computer-use.exe') { throw 'Recursive saved hook retained' }
+. (Join-Path $PSScriptRoot '../../app/src/main/assets/task-notifications/SettingsFile.ps1')
+$fixture = Join-Path ([IO.Path]::GetTempPath()) ('codex-config-' + [Guid]::NewGuid().ToString('N') + '.toml')
+try {
+    $original = "model = 'old'`n"
+    [IO.File]::WriteAllText($fixture, "model = 'new'`n")
+    $rejected = $false
+    try { Write-NotifyConfiguration $fixture $original @('node.exe', 'notify.cjs') $true } catch { $rejected = $true }
+    if (-not $rejected -or [IO.File]::ReadAllText($fixture) -ne "model = 'new'`n") { throw 'Concurrent config edit was overwritten' }
+    [IO.File]::Delete($fixture)
+    Write-NotifyConfiguration $fixture '' @('node.exe', 'notify.cjs') $false
+    if ((Read-Notify ([IO.File]::ReadAllText($fixture)))[0] -ne 'node.exe') { throw 'Missing config was not created' }
+    $rejected = $false
+    try { Write-NotifyConfiguration $fixture '' @('other.exe') $false } catch { $rejected = $true }
+    if (-not $rejected -or (Read-Notify ([IO.File]::ReadAllText($fixture)))[0] -ne 'node.exe') { throw 'Newly created config was overwritten' }
+} finally { if ([IO.File]::Exists($fixture)) { [IO.File]::Delete($fixture) } }
 Write-Output 'Installer parser and callback preservation passed'

@@ -88,6 +88,12 @@ function Set-Notify([string]$Text, [array]$Command) {
     return $line + "`r`n" + $Text
 }
 
+function Write-NotifyConfiguration([string]$Path, [string]$OriginalText, [array]$Command, [bool]$OriginalExists) {
+    $newText = Set-Notify $OriginalText $Command
+    if ($OriginalExists) { Write-SettingsFileAtomically $Path $newText -ExpectedText $OriginalText }
+    else { Write-SettingsFileAtomically $Path $newText -ExpectMissing }
+}
+
 function Get-WrappedNotify([array]$Command) {
     if ($Command.Count -lt 4 -or [IO.Path]::GetFileName([string]$Command[0]) -ne 'codex-computer-use.exe' -or $Command[1] -ne 'turn-ended') { return ,@() }
     $index = [Array]::IndexOf($Command, '--previous-notify')
@@ -128,7 +134,8 @@ function Get-PreservedNotify([array]$Command, [string]$NotifyScript, [array]$Sav
     return ,@($SavedOriginal)
 }
 
-$oldText = if (Test-Path -LiteralPath $configFile) { [IO.File]::ReadAllText($configFile) } else { '' }
+$oldConfigExists = Test-Path -LiteralPath $configFile
+$oldText = if ($oldConfigExists) { [IO.File]::ReadAllText($configFile) } else { '' }
 $oldNotify = Read-Notify $oldText
 if ($Uninstall) {
     if (Test-Path -LiteralPath $connectionFile) {
@@ -141,7 +148,7 @@ if ($Uninstall) {
     Unregister-ScheduledTask -TaskName $remoteTaskName -Confirm:$false -ErrorAction SilentlyContinue
     if ((Test-Path -LiteralPath $connectionFile) -and (Test-OwnNotify $oldNotify $scriptPath)) {
         $saved = Get-Content -LiteralPath $connectionFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        Write-SettingsFileAtomically $configFile (Set-Notify $oldText @($saved.previousNotify))
+        Write-NotifyConfiguration $configFile $oldText @($saved.previousNotify) $oldConfigExists
     }
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
     Write-Host 'Notifications disabled. Original Codex callback restored. Restart Codex.'
@@ -237,8 +244,7 @@ if ($codexExe) { $settings.codexExecutable = $codexExe }
 if ($contentKey) { $settings.contentKey = $contentKey }
 if ($savedConnection -and $savedConnection.appServerUrl) { $settings.appServerUrl = $savedConnection.appServerUrl }
 Write-SettingsFileAtomically $connectionFile ($settings | ConvertTo-Json -Depth 5)
-$newText = Set-Notify $oldText @($launcherPath, $node, $scriptPath)
-Write-SettingsFileAtomically $configFile $newText
+Write-NotifyConfiguration $configFile $oldText @($launcherPath, $node, $scriptPath) $oldConfigExists
 
 # Flush the metadata-only outbox after transient network failures, without an open terminal.
 try {

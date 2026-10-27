@@ -15,18 +15,24 @@ namespace CodexUsage {
 }
 # Atomic replacement lets the background relay read either complete revision.
 # Failed or stale writes never leave truncated credentials or temporary copies.
-function Write-SettingsFileAtomically([string]$Path, [string]$Text, [string]$ExpectedText) {
+function Write-SettingsFileAtomically([string]$Path, [string]$Text, [string]$ExpectedText, [switch]$ExpectMissing) {
     $target = [IO.Path]::GetFullPath($Path)
     $temporary = Join-Path ([IO.Path]::GetDirectoryName($target)) ([IO.Path]::GetFileName($target) + '.' + [Guid]::NewGuid().ToString('N') + '.tmp')
     try {
         [IO.File]::WriteAllText($temporary, $Text, [Text.UTF8Encoding]::new($false))
         $deadline = [DateTime]::UtcNow.AddSeconds(2)
         while ($true) {
+            if ($ExpectMissing -and [IO.File]::Exists($target)) {
+                throw 'Settings changed during setup. No configuration was overwritten; run setup again.'
+            }
             if ($PSBoundParameters.ContainsKey('ExpectedText') -and
                 (-not [IO.File]::Exists($target) -or [IO.File]::ReadAllText($target) -ne $ExpectedText)) {
                 throw 'Settings changed during setup. No configuration was overwritten; run setup again.'
             }
-            if ([CodexUsage.SettingsFileNative]::MoveFileEx($temporary, $target, 9)) { break }
+            # When creating a missing file, omit REPLACE_EXISTING so a concurrently
+            # created file cannot be overwritten between the check and the move.
+            $flags = if ($ExpectMissing) { 8 } else { 9 }
+            if ([CodexUsage.SettingsFileNative]::MoveFileEx($temporary, $target, $flags)) { break }
             $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
             # A reader/antivirus can briefly deny name replacement. Leave the old
             # complete file in place and retry only the writer, with a fixed bound.
