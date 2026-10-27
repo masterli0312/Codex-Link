@@ -32,7 +32,7 @@ sealed class DevicePollResult {
     data class Success(val tokenResult: OAuthTokenResult) : DevicePollResult()
     data object Pending : DevicePollResult()
     data object SlowDown : DevicePollResult()
-    data class Error(val message: String) : DevicePollResult()
+    data class Error(val message: String, val connectionFailure: Boolean = false) : DevicePollResult()
     data object Expired : DevicePollResult()
 }
 
@@ -157,12 +157,13 @@ object DeviceCodeManager {
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (e: Exception) {
-            return@withContext DevicePollResult.Error("Device authorization connection failed")
+            return@withContext DevicePollResult.Error("Device authorization connection failed", connectionFailure = true)
         }
     }
 
     internal fun classifyPollResponse(code: Int, error: String): DevicePollResult = when {
         code == 429 || error == "slow_down" -> DevicePollResult.SlowDown
+        code >= 500 -> DevicePollResult.Error("Device authorization server error (HTTP $code)", connectionFailure = true)
         error == "expired_token" -> DevicePollResult.Expired
         error == "authorization_pending" -> DevicePollResult.Pending
         error.isNotBlank() -> DevicePollResult.Error("Device authorization rejected")

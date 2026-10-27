@@ -125,7 +125,7 @@ class AddAccountViewModel(
         pollingJob?.cancel()
         deviceRequestJob?.cancel()
         deviceRequestJob = viewModelScope.launch {
-            _uiState.update { it.copy(isRequestingDeviceCode = true, deviceSession = null, deviceStatusMessage = null, deviceCodeCopied = false, errorMessage = null) }
+            _uiState.update { it.copy(isRequestingDeviceCode = true, isPollingDeviceCode = false, deviceSession = null, deviceStatusMessage = null, deviceCodeCopied = false, errorMessage = null) }
             val result = DeviceCodeManager.requestDeviceCode()
             if (result.isSuccess) {
                 val session = result.getOrThrow()
@@ -187,7 +187,7 @@ class AddAccountViewModel(
                         _uiState.update {
                             it.copy(
                                 isPollingDeviceCode = false,
-                                deviceStatusMessage = localizedContext.getString(R.string.device_connection_error)
+                                deviceStatusMessage = localizedContext.getString(if (pollResult.connectionFailure) R.string.device_connection_error else R.string.error_device_authorization)
                             )
                         }
                         return@launch
@@ -232,7 +232,8 @@ class AddAccountViewModel(
                 is DevicePollResult.Error -> {
                     pollingJob?.cancel()
                     _uiState.update {
-                        it.copy(isLoading = false, isPollingDeviceCode = false, deviceStatusMessage = localizedContext.getString(R.string.error_device_authorization))
+                        it.copy(isLoading = false, isPollingDeviceCode = false, deviceStatusMessage = localizedContext.getString(
+                            if (pollResult.connectionFailure) R.string.device_connection_error else R.string.error_device_authorization))
                     }
                 }
             }

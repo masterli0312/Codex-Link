@@ -19,6 +19,7 @@ class DeviceCodeManagerTest {
         assertEquals(DevicePollResult.Expired, DeviceCodeManager.classifyPollResponse(400, "expired_token"))
         assertTrue(DeviceCodeManager.classifyPollResponse(400, "access_denied") is DevicePollResult.Error)
         assertTrue(DeviceCodeManager.classifyPollResponse(503, "") is DevicePollResult.Error)
+        assertTrue((DeviceCodeManager.classifyPollResponse(503, "authorization_pending") as DevicePollResult.Error).connectionFailure)
         assertTrue(DeviceCodeManager.classifyPollResponse(200, "") is DevicePollResult.Error)
     }
 

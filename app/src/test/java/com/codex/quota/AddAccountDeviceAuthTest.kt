@@ -64,6 +64,23 @@ class AddAccountDeviceAuthTest {
     }
 
     @Test
+    fun restartingDeviceAuthorizationClearsOldPollingStateEvenWhenRequestFails() = runTest(dispatcher) {
+        val context = mockk<Context>()
+        every { ContextCompat.getContextForLanguage(context) } returns context
+        every { context.getString(any()) } returns "Error"
+        val repository = mockk<CodexAccountRepository>(relaxed = true)
+        val session = DeviceCodeSession("auth-id", "ABCD-EFGH")
+        coEvery { DeviceCodeManager.requestDeviceCode() } returnsMany listOf(Result.success(session), Result.failure(Exception("offline")))
+        val viewModel = AddAccountViewModel(context, AddAccountUseCase(repository), repository)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.isPollingDeviceCode)
+        viewModel.initDeviceAuth(forceRefresh = true)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.isPollingDeviceCode)
+        assertFalse(viewModel.uiState.value.isRequestingDeviceCode)
+    }
+
+    @Test
     fun manualCheckWhilePendingDoesNotCreateAccount() = runTest(dispatcher) {
         val context = mockk<Context>()
         every { ContextCompat.getContextForLanguage(context) } returns context
