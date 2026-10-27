@@ -95,7 +95,9 @@ data class RemoteEvent(
     val forked_from_thread_id: String = "", val goal: RemoteGoal? = null, val goal_waiting: Boolean = false,
     val context_usage: RemoteContextUsage? = null, val five_hour: RemoteLimitWindow? = null, val weekly: RemoteLimitWindow? = null,
     val quota_error: String = "", val skills: List<RemoteSkill> = emptyList(),
-    val reply_patch: RemoteReplyPatch? = null, val reply_patch_pending: Boolean = false, val image: RemoteImageDownload? = null, val file: RemoteFileDownload? = null
+    val reply_patch: RemoteReplyPatch? = null, val reply_patch_pending: Boolean = false, val image: RemoteImageDownload? = null, val file: RemoteFileDownload? = null,
+    val capabilities: List<String> = emptyList(), val agents: List<RemoteAgent> = emptyList(),
+    val tasks: List<RemoteBackgroundTask> = emptyList(), val overview: RemoteOcxOverview? = null
 )
 
 @Serializable
@@ -131,7 +133,8 @@ object RemoteProtocol {
         val plain = TaskContentCipher.decrypt(wire["encrypted"]!!.jsonPrimitive.content, key, "CodexUsage:2.0:event:$id") ?: return null
         json.decodeFromString<RemoteEvent>(plain).also {
             require(it.id == id && uuid.matches(it.request_id) && it.seq > 0 && it.at > 0 &&
-                it.status in setOf("accepted", "running", "approval", "input_required", "completed", "interrupted", "failed", "unknown", "models", "threads", "snapshot", "history", "activities", "managed", "forked", "queued", "steered", "cancelled", "presence", "goal", "session_info", "skills", "image", "file", "thread_activity", "compacting", "compacted"))
+                it.status in setOf("accepted", "running", "approval", "input_required", "completed", "interrupted", "failed", "unknown", "models", "threads", "snapshot", "history", "activities", "managed", "forked", "queued", "steered", "cancelled", "presence", "goal", "session_info", "skills", "image", "file", "thread_activity", "compacting", "compacted",
+                "agents", "tasks", "agent_stop", "task_stop", "ocx_overview"))
             require(it.status != "thread_activity" || uuid.matches(it.host_id) && uuid.matches(it.thread_id) &&
                 it.request_id == it.thread_id && it.conversation_id == TaskInbox.hash(it.thread_id) &&
                 it.turn_id.length in 1..128 && it.activity_running != null && !(it.activity_running && it.activity_completed))

@@ -300,6 +300,7 @@ fun ConversationListScreen(onSettings: () -> Unit, onOpen: (String) -> Unit, onB
                 Icon(Icons.Outlined.Checklist, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp))
                 Text(stringResource(R.string.conversation_sync))
             }
+            if (remoteEnabled && selectedComputer != null) BackgroundTasksEntry(selectedComputer)
             LazyColumn(Modifier.weight(1f), state = listState, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp)) {
                 if (records == null) item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -705,6 +706,8 @@ fun ConversationScreen(id: String, onOpen: (String) -> Unit = {}, onBack: () -> 
                 if (positioned && !followLatest) SmallFloatingActionButton(onClick = { followLatest = true; scope.launch { if (listState.layoutInfo.totalItemsCount > 0) listState.animateScrollToItem(listState.layoutInfo.totalItemsCount - 1) } },
                     modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)) { Icon(Icons.Outlined.KeyboardArrowDown, stringResource(R.string.conversation_jump_latest)) }
             }
+            if (remoteAvailable && current != null) SubagentBar(pairedComputer, (current.snapshot.thread_ref ?: current.snapshot.remote_ref)?.thread_id,
+                active = ConversationIndex.hasPendingTurn(current))
             if (remoteAvailable && current != null) RemoteComposer(activeId, current, onFork = { forkDialog = true }, onGoal = { goalSheet = true })
             else if (current != null) Text(stringResource(R.string.task_history_read_only), Modifier.padding(horizontal = 20.dp, vertical = 12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
