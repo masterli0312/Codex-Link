@@ -49,14 +49,28 @@ test('state retention keeps current and unresolved requests and removes the olde
    const name=path.join(f.dir,'remote-'+c.id+'.json');fs.writeFileSync(name,'old');
    fs.utimesSync(name,new Date(1000+i*1000),new Date(1000+i*1000));
   }
+  const orphan=command(),orphanPath=path.join(f.dir,'remote-'+orphan.id+'.json');
+  fs.writeFileSync(orphanPath,'old');fs.utimesSync(orphanPath,new Date(0),new Date(0));
   controller.active={c:active};
   const current=command();await controller.update(current,'completed');
   assert.equal(fs.existsSync(path.join(f.dir,'remote-'+old.id+'.json')),false);
   for(const c of [unresolved,active,current])assert.equal(fs.existsSync(path.join(f.dir,'remote-'+c.id+'.json')),true);
+  assert.equal(fs.existsSync(orphanPath),true); // Missing metadata is not proof of completion.
   assert.equal(fs.readdirSync(f.dir).filter(n=>/^remote-[a-f0-9-]+\.json$/.test(n)).length,128);
   const wire=JSON.parse(fs.readFileSync(path.join(f.dir,'remote-'+current.id+'.json'),'utf8'));
   assert.equal(decode('event',wire,key).request_id,current.id);
   assert.equal(fs.readdirSync(f.dir).some(n=>n.endsWith('.tmp')),false);
+ }finally{controller.close();f.cleanup();}
+});
+
+test('journal retention does not discard an older unresolved request',()=>{
+ const f=fixture(),controller=new RemoteController({directory:f.dir,key,hostId:host,emit:async()=>{}});
+ try{
+  const pending=command();controller.journal[pending.id]={status:'unknown',thread_id:thread};
+  for(let i=0;i<520;i++)controller.journal[crypto.randomUUID()]={status:'completed',thread_id:thread};
+  controller.persist();
+  assert.equal(controller.journal[pending.id].status,'unknown');
+  assert.equal(Object.keys(controller.journal).length,512);
  }finally{controller.close();f.cleanup();}
 });
 

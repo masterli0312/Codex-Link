@@ -161,6 +161,7 @@ async function checkNativeBaseline(client,c,local){
   if(!last||last.id!==c.baseline_turn||!['completed','interrupted','failed'].includes(last.status))throw Error('STALE');
 }
 const activity=require('./remote-activity.cjs');
+const unresolvedStatus=status=>!status||['unknown','accepted','running','approval','input_required','compacting','queued'].includes(status);
 class RemoteController{
   constructor({directory,key,hostId,clientFactory,resolve,emit,recover,readLocal,readRevision,readContext,endpoint,imageFetch,questionFactory}){
     Object.assign(this,{directory,key,hostId,clientFactory,resolve,emit,recover,readLocal,readRevision,readContext,endpoint,imageFetch,questionFactory});this.active=null;this.seq=Date.now();
@@ -239,7 +240,13 @@ class RemoteController{
   }
   persist(){
     fs.mkdirSync(this.directory,{recursive:true});
-    const entries=Object.entries(this.journal).slice(-512);this.journal=Object.fromEntries(entries);
+    const all=Object.entries(this.journal);
+    const protectedIds=new Set(all.filter(([id,row])=>id===this.active?.c.id||unresolvedStatus(row.status)).map(([id])=>id));
+    const completed=all.filter(([id])=>!protectedIds.has(id));
+    const kept=new Set(completed.slice(-Math.max(0,512-protectedIds.size)).map(([id])=>id));
+    // slice(-0) means slice(0); with 512 unresolved requests no completed row is retained.
+    if(protectedIds.size>=512)kept.clear();
+    this.journal=Object.fromEntries(all.filter(([id])=>protectedIds.has(id)||kept.has(id)));
     fs.writeFileSync(this.file+'.tmp',JSON.stringify(this.journal),{mode:0o600});fs.renameSync(this.file+'.tmp',this.file);
   }
   stopWatching(){
@@ -411,7 +418,7 @@ class RemoteController{
     for(const file of stateFiles){
       if(!excess)break;
       const status=this.journal[file.id]?.status;
-      if(file.id===c.id||file.id===this.active?.c.id||['unknown','accepted','running','approval','input_required','compacting','queued'].includes(status))continue;
+      if(file.id===c.id||file.id===this.active?.c.id||unresolvedStatus(status))continue;
       fs.unlinkSync(path.join(this.directory,file.name));excess--;
     }
     await this.emit(e);return e;
