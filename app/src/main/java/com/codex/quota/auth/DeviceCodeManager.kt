@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import okhttp3.FormBody
+import okhttp3.Headers
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -32,9 +33,11 @@ sealed class DevicePollResult {
     data class Success(val tokenResult: OAuthTokenResult) : DevicePollResult()
     data object Pending : DevicePollResult()
     data object SlowDown : DevicePollResult()
-    data class Error(val message: String, val connectionFailure: Boolean = false) : DevicePollResult()
+    data class Error(val message: String, val connectionFailure: Boolean = false, val cloudflareBlocked: Boolean = false) : DevicePollResult()
     data object Expired : DevicePollResult()
 }
+
+class DeviceAuthorizationBlockedException : Exception("DEVICE_AUTH_CLOUDFLARE_BLOCKED")
 
 object DeviceCodeManager {
 
@@ -102,8 +105,12 @@ object DeviceCodeManager {
                     )
                 )
             } else {
-                return@withContext Result.failure(Exception("Failed to request device code: ${response.code} $body"))
+                if (com.codex.quota.data.remote.isCloudflareNodeBlock(response.code, response.headers))
+                    return@withContext Result.failure(DeviceAuthorizationBlockedException())
+                return@withContext Result.failure(Exception("Failed to request device code: HTTP ${response.code}"))
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             return@withContext Result.failure(e)
         }
@@ -145,15 +152,14 @@ object DeviceCodeManager {
                     if (tokenResult.isSuccess) {
                         return@withContext DevicePollResult.Success(tokenResult.getOrThrow())
                     } else {
-                        return@withContext DevicePollResult.Error(
-                            tokenResult.exceptionOrNull()?.message ?: "Token exchange failed."
-                        )
+                        val blocked = tokenResult.exceptionOrNull() is DeviceAuthorizationBlockedException
+                        return@withContext DevicePollResult.Error("Token exchange failed", connectionFailure = blocked, cloudflareBlocked = blocked)
                     }
                 }
             }
 
             val errorCode = runCatching { JSONObject(body).optString("error") }.getOrDefault("")
-            return@withContext classifyPollResponse(response.code, errorCode)
+            return@withContext classifyPollResponse(response.code, errorCode, response.headers)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (e: Exception) {
@@ -161,7 +167,9 @@ object DeviceCodeManager {
         }
     }
 
-    internal fun classifyPollResponse(code: Int, error: String): DevicePollResult = when {
+    internal fun classifyPollResponse(code: Int, error: String, headers: Headers = Headers.Builder().build()): DevicePollResult = when {
+        com.codex.quota.data.remote.isCloudflareNodeBlock(code, headers) ->
+            DevicePollResult.Error("Device authorization blocked", connectionFailure = true, cloudflareBlocked = true)
         code == 429 || error == "slow_down" -> DevicePollResult.SlowDown
         code >= 500 -> DevicePollResult.Error("Device authorization server error (HTTP $code)", connectionFailure = true)
         error == "expired_token" -> DevicePollResult.Expired
@@ -214,8 +222,12 @@ object DeviceCodeManager {
                     )
                 )
             } else {
-                return@withContext Result.failure(Exception("Failed to exchange code: ${response.code} $body"))
+                if (com.codex.quota.data.remote.isCloudflareNodeBlock(response.code, response.headers))
+                    return@withContext Result.failure(DeviceAuthorizationBlockedException())
+                return@withContext Result.failure(Exception("Failed to exchange code: HTTP ${response.code}"))
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             return@withContext Result.failure(e)
         }

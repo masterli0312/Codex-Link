@@ -138,11 +138,13 @@ class AddAccountViewModel(
                 }
                 startDevicePolling(session)
             } else {
+                val message = localizedContext.getString(if (result.exceptionOrNull() is com.codex.quota.auth.DeviceAuthorizationBlockedException)
+                    R.string.device_cloudflare_blocked else R.string.device_connection_error)
                 _uiState.update {
                     it.copy(
                         isRequestingDeviceCode = false,
-                        deviceStatusMessage = localizedContext.getString(R.string.device_connection_error),
-                        errorMessage = localizedContext.getString(R.string.device_connection_error)
+                        deviceStatusMessage = message,
+                        errorMessage = message
                     )
                 }
             }
@@ -187,7 +189,11 @@ class AddAccountViewModel(
                         _uiState.update {
                             it.copy(
                                 isPollingDeviceCode = false,
-                                deviceStatusMessage = localizedContext.getString(if (pollResult.connectionFailure) R.string.device_connection_error else R.string.error_device_authorization)
+                                deviceStatusMessage = localizedContext.getString(when {
+                                    pollResult.cloudflareBlocked -> R.string.device_cloudflare_blocked
+                                    pollResult.connectionFailure -> R.string.device_connection_error
+                                    else -> R.string.error_device_authorization
+                                })
                             )
                         }
                         return@launch
@@ -233,7 +239,11 @@ class AddAccountViewModel(
                     pollingJob?.cancel()
                     _uiState.update {
                         it.copy(isLoading = false, isPollingDeviceCode = false, deviceStatusMessage = localizedContext.getString(
-                            if (pollResult.connectionFailure) R.string.device_connection_error else R.string.error_device_authorization))
+                            when {
+                                pollResult.cloudflareBlocked -> R.string.device_cloudflare_blocked
+                                pollResult.connectionFailure -> R.string.device_connection_error
+                                else -> R.string.error_device_authorization
+                            }))
                     }
                 }
             }

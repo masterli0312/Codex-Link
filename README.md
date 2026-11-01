@@ -6,9 +6,9 @@
 
 在 Android 手机上查看多个 ChatGPT / Codex 账号的额度，并通过配对电脑接收任务提醒、阅读和继续 Codex 对话。支持简体中文与英文。
 
-[下载 1.0.9 APK](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.9-debug/Codex-Link-v1.0.9-debug.apk) · [发布说明](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.9-debug) · [全部版本](https://github.com/masterli0312/Codex-Link/releases)
+[下载 1.0.10 APK](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.10-debug/Codex-Link-v1.0.10-debug.apk) · [发布说明](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.10-debug) · [全部版本](https://github.com/masterli0312/Codex-Link/releases)
 
-> 项目由 Codex Usage 更名为 **Codex Link**。当前源码与公开 APK 为 **1.0.9**（versionCode **43**），新增子代理面板、后台任务（codex exec 的 GPT / Gemini 任务）与 opencodex 概览，可查看进度、只读对话并确认后停止；保留 1.0.8 的各项修复。代码更新同步发布 GitHub Release，提供 APK、SHA-256 校验文件和更新说明。
+> 项目由 Codex Usage 更名为 **Codex Link**。当前源码与公开 APK 为 **1.0.10**（versionCode **44**），改善 OpenAI 授权遇到 Cloudflare 验证拦截时的提示和账号状态，保留子代理面板、后台任务及现有功能。代码更新同步发布 GitHub Release，提供 APK、SHA-256 校验文件和更新说明。
 
 > Android **8.0+**。已配对的用户升级后还需从 App 重新分享电脑安装包，在电脑运行 `setup.cmd` 并按提示重启 Codex。只更新 APK 不会更新电脑组件。
 
@@ -51,12 +51,12 @@
 
 ## 安装与升级
 
-1. 下载 [Codex-Link-v1.0.9-debug.apk](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.9-debug/Codex-Link-v1.0.9-debug.apk)。
+1. 下载 [Codex-Link-v1.0.10-debug.apk](https://github.com/masterli0312/Codex-Link/releases/download/apk-1.0.10-debug/Codex-Link-v1.0.10-debug.apk)。
 2. 在 Android 8.0 或更新系统打开 APK，按系统提示允许安装。
 3. 首次打开添加自己的账号；需要提醒时允许通知和后台运行。
 4. 已使用电脑同步的用户：更新手机后，重新分享电脑安装 ZIP，在原电脑运行 `setup.cmd`，按安装器提示重启 Codex。
 
-公开下载的 1.0.9 包名为 `com.codex.quota.debug`，内部版本号 **43**。本次 Release 使用经过本地构建检查的 APK，沿用本地 1.0.3 签名。覆盖升级需要相同包名与签名。**1.0.1 的 GitHub 构建与本地签名不同，不能直接覆盖。保留数据升级需要原签名密钥构建；卸载会清除手机本地账号、配对和设置。** 发布说明包含签名证书 SHA-256，便于核对。
+公开下载的 1.0.10 包名为 `com.codex.quota.debug`，内部版本号 **44**。本次 Release 使用经过本地构建检查的 APK，沿用本地 1.0.9 签名。覆盖升级需要相同包名与签名。**1.0.1 的 GitHub 构建与本地签名不同，不能直接覆盖。保留数据升级需要原签名密钥构建；卸载会清除手机本地账号、配对和设置。** 发布说明包含签名证书 SHA-256，便于核对。
 
 发布页同时提供 SHA256 校验文件。此版本不是正式签名生产包。
 
@@ -148,7 +148,16 @@ Android 13+ 需要通知权限；声音和震动由系统通知渠道管理。�
 
 详细边界和卸载方法见 [电脑连接指南](docs/task-notifications.md)。
 
-## 1.0.9 更新摘要（当前源码）
+## 1.0.10 更新摘要（当前源码）
+
+- 设备授权收到 Cloudflare 验证页面时，提示网络验证受阻，不再误显示等待授权。登录网页出错时提示关闭浏览器翻译或更换浏览器和网络。
+- 刷新登录凭据遇到 Cloudflare 验证拦截时保留原凭据，并显示临时网络错误；网络恢复后可重试。不会改变官方网页的验证结果。
+
+[1.0.10 更新说明](RELEASE_NOTES_1.0.10_LINK.md)。本次仅修改 App；若从 1.0.9 之前升级，请按对应版本说明更新电脑组件。
+
+发布检查：402 项 Android 单元测试、263 项电脑组件测试通过，APK 构建及 lint 通过。授权拦截使用模拟响应验证，尚未在手机上验证新版本。
+
+## 1.0.9 更新摘要
 
 - 子代理面板：对话内显示派出的子代理、状态与最后回复，可只读查看并单独停止当前一轮（需共享连接）。
 - 后台任务：列出电脑上 codex exec 运行的 GPT / Gemini 等任务，查看进度与对话；有任务清单的任务可在核验后停止。
@@ -304,7 +313,7 @@ The app supports two-way text conversations, available models and reasoning leve
 
 **Task notifications do not inherently require a VPN or Google Play Services, including in mainland China, provided the notification service is reachable.** Authentication, quota, automatic activation and Cloud require access to OpenAI. Activation runs on the phone and cannot proceed while OpenAI is unreachable; it can continue when access is restored. Android background restrictions and network conditions can delay delivery.
 
-Current source and the public [debug APK download](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.9-debug) are **1.0.9 / versionCode 43**. Version 1.0.9 adds a subagent panel inside conversations, a background task list for codex exec runs (GPT and Gemini) with read-only transcripts and verified stop, and a read-only opencodex overview; the computer component stays isolated from Claude/Anthropic services. Re-share the setup ZIP and run `setup.cmd`. Version 1.0.8 fixes issues confirmed in a full code review: credentials are validated before reauthentication replaces them, reset credits cannot be spent twice after a failed refresh, clearing data removes setup ZIPs and download caches, and the Windows bridge uses an OS-released single-instance lock. Re-share the setup ZIP and run `setup.cmd`. Version 1.0.7 makes the Windows shared app-server start reuse an existing server that answers `/readyz`, report (never seize or stop) a port held by another program, and keep one supervisor per port; re-share the computer setup ZIP and run `setup.cmd` to update the Windows component. Version 1.0.6 reauthentication of the original account is retained. Native context compaction, pairing recovery, question dialogs, document downloads and Chinese bold styling remain supported. PDF has a built-in preview; DOCX/PPTX require a compatible viewer. App updates include an APK, SHA-256 checksum and release notes. This release retains the 1.0.8 certificate; GitHub-built 1.0.1 uses a different certificate.
+Current source and the public [debug APK download](https://github.com/masterli0312/Codex-Link/releases/tag/apk-1.0.10-debug) are **1.0.10 / versionCode 44**. Version 1.0.10 identifies Cloudflare blocks during device authorization and token refresh, retains credentials, and explains browser and network troubleshooting. Version 1.0.9 adds a subagent panel inside conversations, a background task list for codex exec runs (GPT and Gemini) with read-only transcripts and verified stop, and a read-only opencodex overview; the computer component stays isolated from Claude/Anthropic services. Re-share the setup ZIP and run `setup.cmd`. Version 1.0.8 fixes issues confirmed in a full code review: credentials are validated before reauthentication replaces them, reset credits cannot be spent twice after a failed refresh, clearing data removes setup ZIPs and download caches, and the Windows bridge uses an OS-released single-instance lock. Re-share the setup ZIP and run `setup.cmd`. Version 1.0.7 makes the Windows shared app-server start reuse an existing server that answers `/readyz`, report (never seize or stop) a port held by another program, and keep one supervisor per port; re-share the computer setup ZIP and run `setup.cmd` to update the Windows component. Version 1.0.6 reauthentication of the original account is retained. Native context compaction, pairing recovery, question dialogs, document downloads and Chinese bold styling remain supported. PDF has a built-in preview; DOCX/PPTX require a compatible viewer. App updates include an APK, SHA-256 checksum and release notes. This release retains the 1.0.8 certificate; GitHub-built 1.0.1 uses a different certificate.
 
 Version 1.0.2 adds selective computer conversation sync, swipe actions, remote question dialogs, generated-file downloads, PDF preview and up to 10 draft attachments. Steer receipts bypass conversation snapshot transfer; real latency still depends on connectivity. Notification cards use the launcher artwork; OEMs such as vivo may need one phone reboot to discard cached old icons.
 

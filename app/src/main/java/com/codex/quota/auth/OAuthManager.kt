@@ -24,7 +24,7 @@ data class OAuthTokenResult(
     val clientId: String = OAuthManager.DEFAULT_CLIENT_ID
 )
 
-class OAuthTokenRefreshRejectedException(val statusCode: Int) : Exception("OAuth refresh rejected: HTTP $statusCode")
+class OAuthTokenRefreshRejectedException(val statusCode: Int, val cloudflareBlocked: Boolean = false) : Exception("OAuth refresh rejected: HTTP $statusCode")
 
 object OAuthManager {
 
@@ -94,7 +94,8 @@ object OAuthManager {
                     .build()
                 httpClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
-                        return@withContext Result.failure(OAuthTokenRefreshRejectedException(response.code))
+                        return@withContext Result.failure(OAuthTokenRefreshRejectedException(response.code,
+                            cloudflareBlocked = com.codex.quota.data.remote.isCloudflareNodeBlock(response.code, response.headers)))
                     }
                     val json = JSONObject(response.body?.string().orEmpty())
                     val accessToken = json.getString("access_token")

@@ -47,6 +47,33 @@ class AddAccountDeviceAuthTest {
     }
 
     @Test
+    fun cloudflarePollFailureShowsAnActionableErrorInsteadOfWaiting() = runTest(dispatcher) {
+        val context = mockk<Context>()
+        every { ContextCompat.getContextForLanguage(context) } returns context
+        every { context.getString(any()) } answers { "resource-${firstArg<Int>()}" }
+        val repository = mockk<CodexAccountRepository>(relaxed = true)
+        val session = DeviceCodeSession("auth-id", "ABCD-EFGH", intervalSeconds = 3)
+        coEvery { DeviceCodeManager.requestDeviceCode() } returns Result.success(session)
+        coEvery { DeviceCodeManager.pollDeviceToken(session) } returns DevicePollResult.Error("blocked", connectionFailure = true, cloudflareBlocked = true)
+        val viewModel = AddAccountViewModel(context, AddAccountUseCase(repository), repository)
+        runCurrent(); advanceTimeBy(3001); runCurrent()
+        assertFalse(viewModel.uiState.value.isPollingDeviceCode)
+        assertTrue(viewModel.uiState.value.deviceStatusMessage == "resource-${com.codex.quota.R.string.device_cloudflare_blocked}")
+    }
+
+    @Test fun blockedDeviceCodeRequestShowsNetworkVerificationMessage() = runTest(dispatcher) {
+        val context = mockk<Context>()
+        every { ContextCompat.getContextForLanguage(context) } returns context
+        every { context.getString(any()) } answers { "resource-${firstArg<Int>()}" }
+        val repository = mockk<CodexAccountRepository>(relaxed = true)
+        coEvery { DeviceCodeManager.requestDeviceCode() } returns Result.failure(com.codex.quota.auth.DeviceAuthorizationBlockedException())
+        val viewModel = AddAccountViewModel(context, AddAccountUseCase(repository), repository)
+        runCurrent()
+        assertFalse(viewModel.uiState.value.isRequestingDeviceCode)
+        assertTrue(viewModel.uiState.value.deviceStatusMessage == "resource-${com.codex.quota.R.string.device_cloudflare_blocked}")
+    }
+
+    @Test
     fun exhaustedPollingStopsAndShowsExpiry() = runTest(dispatcher) {
         val context = mockk<Context>()
         every { ContextCompat.getContextForLanguage(context) } returns context

@@ -8,8 +8,18 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import okhttp3.Headers
 
 class DeviceCodeManagerTest {
+
+    @Test fun cloudflareChallengeIsNotTreatedAsAnAuthorizationPendingResponse() {
+        val challenge = Headers.Builder().add("Content-Type", "text/html; charset=UTF-8").add("CF-RAY", "example").build()
+        val result = DeviceCodeManager.classifyPollResponse(403, "", challenge)
+        assertTrue(result is DevicePollResult.Error)
+        assertTrue((result as DevicePollResult.Error).cloudflareBlocked)
+        assertTrue(result.connectionFailure)
+        assertEquals(DevicePollResult.Pending, DeviceCodeManager.classifyPollResponse(403, "", Headers.Builder().add("Content-Type", "application/json").build()))
+    }
 
     @Test fun pollHttpResponsesDistinguishPendingThrottlingAndErrors() {
         assertEquals(DevicePollResult.Pending, DeviceCodeManager.classifyPollResponse(403, ""))

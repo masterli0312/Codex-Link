@@ -356,6 +356,9 @@ fun AddAccountScreen(
                                     Text(stringResource(R.string.i_authorized))
                                 }
                             }
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(stringResource(R.string.device_browser_troubleshoot),
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
 

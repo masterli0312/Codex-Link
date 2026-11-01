@@ -14,6 +14,7 @@ class CloudflareNodeBlockTest {
 
     @Test fun cloudflareHtml403_isNodeBlock() {
         assertTrue(isCloudflareNodeBlock(403, challengeHeaders))
+        assertTrue(isCloudflareNodeBlock(403, Headers.Builder().add("cf-mitigated", "challenge").build()))
     }
 
     @Test fun ordinaryForbiddenOrSuccessfulResponse_doesNotPromptForNodeSwitch() {

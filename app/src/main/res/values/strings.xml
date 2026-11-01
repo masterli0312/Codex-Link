@@ -1,4 +1,6 @@
 <resources>
+    <string name="device_cloudflare_blocked">OpenAI verification was blocked. Switch to a working network or VPN node and start sign-in again.</string>
+    <string name="device_browser_troubleshoot">If the sign-in page fails, turn off browser translation or try another browser and network.</string>
     <string name="relogin_account_hint">Sign in to the original account for %1$s. Its settings and history will be retained.</string>
     <string name="relogin_account_mismatch">This is a different account or its identity could not be confirmed. Sign in to the original account; its credentials have not been replaced.</string>
     <string name="conversation_compact">Compact context</string>

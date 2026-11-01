@@ -262,7 +262,14 @@ class CodexAccountRepositoryImpl(
         val dataSource = if (account.isDemoAccount) mockDataSource else realDataSource
         val currentKey = if (account.isDemoAccount) Result.success(apiKey)
             else ensureFreshAccessToken(account.id, apiKey)
-        if (currentKey.isFailure) return Result.failure(currentKey.exceptionOrNull()!!)
+        if (currentKey.isFailure) {
+            val failure = currentKey.exceptionOrNull()!!
+            if (failure is OAuthTokenRefreshRejectedException && failure.cloudflareBlocked) {
+                val usage = CodexUsage.empty(account.id, AuthStatus.TEMPORARY_ERROR).copy(errorMessage = com.codex.quota.data.remote.CF_BLOCKED_ERROR)
+                return Result.success(saveFetchedUsage(account, usage))
+            }
+            return Result.failure(failure)
+        }
         val result = dataSource.fetchUsage(account, currentKey.getOrThrow())
 
         return if (result.isSuccess) {

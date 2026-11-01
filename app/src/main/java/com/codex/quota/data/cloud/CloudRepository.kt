@@ -190,6 +190,7 @@ class CloudRepository(private val accounts: CodexAccountRepository, private val 
     private fun credentialError(error: Throwable): CloudException {
         val rejected = error as? com.codex.quota.auth.OAuthTokenRefreshRejectedException
         return CloudException(when {
+            rejected?.cloudflareBlocked == true -> CloudErrorKind.NETWORK
             rejected?.statusCode in listOf(400, 401) -> CloudErrorKind.LOGIN
             rejected?.statusCode == 429 -> CloudErrorKind.RATE_LIMIT
             error is java.io.IOException -> CloudErrorKind.NETWORK

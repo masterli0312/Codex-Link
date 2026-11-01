@@ -44,6 +44,29 @@ class CodexAccountRepositoryTest {
         )
     }
 
+    @Test fun cloudflareBlockedTokenRefreshShowsTemporaryErrorAndRecoversWithoutDiscardingCredentials() = runTest {
+        var expired = false
+        var blocked = true
+        val provider = com.codex.quota.auth.AccountAccessTokenProvider(fakeCredentialStore,
+            expiryOf = { if (expired && it == "old-access") 0L else Long.MAX_VALUE },
+            refreshTokens = { _, _ -> if (blocked) Result.failure(com.codex.quota.auth.OAuthTokenRefreshRejectedException(403, cloudflareBlocked = true))
+                else Result.success(com.codex.quota.auth.OAuthTokenResult("new-access", "new-refresh", null, 3600, null)) })
+        val repo = CodexAccountRepositoryImpl(fakeAccountDao, fakeUsageDao, fakeCredentialStore,
+            realDataSource = MockOpenAiDataSource(), accessTokens = provider)
+        val account = repo.addAccount("OAuth", "same@test.org", "old-access", PlanType.PLUS, null, "#10B981",
+            oauthRefreshToken = "old-refresh", oauthClientId = "client").getOrThrow()
+        expired = true
+        val failed = repo.refreshAccount(account.id).getOrThrow()
+        assertEquals(AuthStatus.TEMPORARY_ERROR, failed.status)
+        assertEquals(com.codex.quota.data.remote.CF_BLOCKED_ERROR, failed.errorMessage)
+        assertEquals("old-access", fakeCredentialStore.getApiKey(account.id))
+        assertEquals("old-refresh", fakeCredentialStore.getRefreshToken(account.id))
+        blocked = false
+        assertEquals(AuthStatus.AUTHENTICATED, repo.refreshAccount(account.id).getOrThrow().status)
+        assertEquals("new-access", fakeCredentialStore.getApiKey(account.id))
+        assertEquals("new-refresh", fakeCredentialStore.getRefreshToken(account.id))
+    }
+
     @Test
     fun addAccount_persistsAccountAndCredentials() = runTest {
         val result = repository.addAccount(
