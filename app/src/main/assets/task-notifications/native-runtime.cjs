@@ -10,29 +10,50 @@ function installedPackage(env){
   {env:clean,encoding:'utf8',windowsHide:true,timeout:5000,maxBuffer:8192,stdio:['ignore','pipe','ignore']}).trim();
  return Buffer.from(encoded,'base64').toString('utf8');
 }
+// Sidecars the app-server spawns next to itself. Desktop updates prune them from older cache folders
+// but leave codex.exe behind, so a cached codex.exe alone is not a usable runtime.
+const DESKTOP_SIDECARS=['codex-code-mode-host.exe'];
 function resolveNativeExecutable(preferred,{env=process.env,platform=process.platform,queryPackage=installedPackage}={}){
  const valid=file=>{try{return typeof file==='string'&&path.isAbsolute(file)&&fs.statSync(file).isFile()&&fs.statSync(file).size>0;}catch{return false;}};
- if(valid(preferred))return preferred;
- const search=env.PATH||env.Path||env.path||'';
- for(const directory of search.split(platform==='win32'?';':':').filter(Boolean)){
-  const file=path.join(directory,platform==='win32'?'codex.exe':'codex');if(valid(file))return file;
- }
- if(platform==='win32'){
-  const local=env.LOCALAPPDATA||env.LocalAppData;
-  if(local){
-   const root=path.join(local,'OpenAI','Codex','bin');
-   try{
-    const dirs=fs.readdirSync(root,{withFileTypes:true}).filter(d=>d.isDirectory()).slice(0,128)
-     .map(d=>({file:path.join(root,d.name,'codex.exe'),time:fs.statSync(path.join(root,d.name)).mtimeMs})).sort((a,b)=>b.time-a.time);
-    for(const candidate of dirs)if(valid(candidate.file))return candidate.file;
-   }catch{}
-  }
+ const complete=file=>valid(file)&&DESKTOP_SIDECARS.every(name=>valid(path.join(path.dirname(file),name)));
+ const local=platform==='win32'?env.LOCALAPPDATA||env.LocalAppData:'';
+ const cacheRoot=local?path.join(local,'OpenAI','Codex','bin'):'';
+ const inside=(file,root)=>{const relative=path.relative(root,file);return !!relative&&!relative.startsWith('..')&&!path.isAbsolute(relative);};
+ // A desktop-managed path is only a hint: every desktop update makes it stale.
+ const managed=typeof preferred==='string'&&path.isAbsolute(preferred)&&(!!cacheRoot&&inside(preferred,cacheRoot)||/[\\/]WindowsApps[\\/]OpenAI\.Codex_/i.test(preferred));
+ const cached=()=>{
+  try{
+   return fs.readdirSync(cacheRoot,{withFileTypes:true}).filter(d=>d.isDirectory()).slice(0,128)
+    .map(d=>({file:path.join(cacheRoot,d.name,'codex.exe'),time:fs.statSync(path.join(cacheRoot,d.name)).mtimeMs})).sort((a,b)=>b.time-a.time);
+  }catch{return [];}
+ };
+ const packaged=()=>{
   try{
    const install=queryPackage(env);
    if(typeof install==='string'&&path.isAbsolute(install)){
     const file=path.join(install,'app','resources','codex.exe');if(valid(file))return file;
    }
   }catch{} // Never relay package-manager diagnostics or local private settings.
+  return '';
+ };
+ if(valid(preferred)&&!managed)return preferred;
+ if(managed){
+  // Follow the installed desktop: its own copied runtime (same codex.exe) first, then the package itself.
+  const install=packaged();
+  if(install){
+   const size=fs.statSync(install).size;
+   for(const candidate of cached())if(complete(candidate.file)&&fs.statSync(candidate.file).size===size)return candidate.file;
+   if(complete(install))return install;
+  }
+  if(complete(preferred))return preferred;
+ }
+ const search=env.PATH||env.Path||env.path||'';
+ for(const directory of search.split(platform==='win32'?';':':').filter(Boolean)){
+  const file=path.join(directory,platform==='win32'?'codex.exe':'codex');if(valid(file))return file;
+ }
+ if(platform==='win32'){
+  for(const candidate of cached())if(complete(candidate.file))return candidate.file;
+  const install=packaged();if(install)return install;
  }
  throw Error('CODEX_MISSING');
 }

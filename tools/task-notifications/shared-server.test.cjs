@@ -76,6 +76,18 @@ test('a crashed native server on a free port is restarted by the same supervisor
     await until(()=>children.length===2);assert.equal(readHealth(dir).nativePid,children[1].pid);
   }finally{result.close();}
 });
+test('a running server moves to the runtime of an updated desktop',async()=>{
+  const dir=runtime(),{children,spawnNative}=natives();let installed='C:\\fixture\\old\\codex.exe';
+  const resolveNative=pinned=>{assert.equal(pinned,'C:\\fixture\\codex.exe');return installed;};
+  const result=await main(dir,options({spawnNative,probe:scripted(['free']),resolveNative,runtimeInterval:5}));
+  try{
+    await until(()=>children.length===1);await new Promise(r=>setTimeout(r,30));assert.equal(children[0].killed,0);
+    installed='C:\\fixture\\new\\codex.exe';
+    await until(()=>children[0].killed===1);assert.equal(readHealth(dir).nextExecutable,installed);
+    children[0].emit('exit',1);
+    await until(()=>children.length===2);assert.equal(readHealth(dir).nativeExecutable,installed);
+  }finally{result.close();}
+});
 test('the lease is released by the OS when its owner closes',async()=>{
   const name=lockName(),first=await acquireSupervisor(name);
   assert.ok(first);assert.equal(await acquireSupervisor(name),null);

@@ -47,9 +47,11 @@ function acquireSupervisor(name){
 }
 async function main(directory=__dirname,{
   spawnNative=spawn,probe=probeShared,resolveNative=resolveNativeExecutable,lockName,
-  busyAttempts=8,busyInterval=1000,readyInterval=500,readyTimeout=60000,handleSignals=true,
+  busyAttempts=8,busyInterval=1000,readyInterval=500,readyTimeout=60000,runtimeInterval=300000,handleSignals=true,
 }={}){
   const cfg=JSON.parse(fs.readFileSync(path.join(directory,'connection.json'),'utf8').replace(/^﻿/,''));
+  // The configured path is only a starting hint; each start re-resolves it against the installed desktop.
+  const pinned=cfg.codexExecutable;
   const endpoint=localSharedEndpoint(cfg.appServerUrl||DEFAULT_SHARED_URL);
   const healthFile=path.join(directory,'shared-server-health.json');
   const previous=()=>{try{return JSON.parse(fs.readFileSync(healthFile,'utf8'));}catch{return {};}};
@@ -64,11 +66,11 @@ async function main(directory=__dirname,{
     if(initial==='ready'){external('reused');return {state:'reused'};}
     external('blocked','PORT_IN_USE_NOT_READY');return {state:'blocked'};
   }
-  let child,closing=false,failures=0,timer,readyTimer,finish;
+  let child,closing=false,failures=0,timer,readyTimer,runtimeTimer,finish;
   const done=new Promise(resolve=>{finish=resolve;});
   const health=state=>writeHealth({supervisorPid:process.pid,nativePid:child?.pid||0,nativeExecutable:cfg.codexExecutable,...state});
   const close=(state='stopped')=>{
-    if(closing)return;closing=true;clearTimeout(timer);clearTimeout(readyTimer);
+    if(closing)return;closing=true;clearTimeout(timer);clearTimeout(readyTimer);clearTimeout(runtimeTimer);
     if(state==='stopped')child?.kill();lease.close();finish({state});
   };
   const retry=()=>{timer=setTimeout(start,Math.min(30000,1000*2**Math.min(failures,5)));};
@@ -80,9 +82,20 @@ async function main(directory=__dirname,{
       else if(!closing&&child===current)health({state:'starting',error:'NOT_READY'});
     },readyInterval);
   };
+  // A desktop update leaves a long-lived server on the previous runtime, whose sidecars it then prunes;
+  // move the server to the runtime the installed desktop now resolves to. The exit handler restarts it.
+  const watchRuntime=()=>{
+    if(!runtimeInterval)return;
+    runtimeTimer=setTimeout(()=>{
+      if(closing)return;
+      let next;try{next=resolveNative(pinned);}catch{}
+      if(next&&child&&next!==cfg.codexExecutable){health({state:'switching',nextExecutable:next});child.kill();}
+      watchRuntime();
+    },runtimeInterval);
+  };
   function start(){
     if(closing)return;
-    try{cfg.codexExecutable=resolveNative(cfg.codexExecutable);}catch{
+    try{cfg.codexExecutable=resolveNative(pinned);}catch{
       health({state:'unavailable',error:'CODEX_MISSING'});failures++;retry();return;
     }
     const current=child=spawnNative(cfg.codexExecutable,['-c','features.code_mode_host=true','app-server','--listen',endpoint.replace(/\/$/, '')],{
@@ -102,7 +115,7 @@ async function main(directory=__dirname,{
     current.on('error',exit);current.on('exit',exit);
   }
   if(handleSignals){process.on('SIGINT',()=>close());process.on('SIGTERM',()=>close());process.on('exit',()=>close());}
-  start();
+  start();watchRuntime();
   return {state:'supervising',done,close:()=>close()};
 }
 function run(directory){
