@@ -52,7 +52,7 @@ function phoneActive(directory){
   const entries=JSON.parse(fs.readFileSync(path.join(directory,'remote-journal.json'),'utf8').replace(/^\uFEFF/,''));
   if(!entries||typeof entries!=='object'||Array.isArray(entries))return true;
   return Object.values(entries).some(entry=>!entry||typeof entry!=='object'||typeof entry.status!=='string'||['accepted','running','approval','input_required','queued'].includes(entry.status));
- }catch{return true;}
+ }catch(e){return e.code!=='ENOENT';} // No journal means no phone task was ever accepted here.
 }
 // Unlike thread/list, the loaded list covers all in-memory origins, including subagents.
 async function nativeActive(endpoint,timeout=10000,Client=SharedCodexClient){

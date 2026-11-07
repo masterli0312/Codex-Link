@@ -319,11 +319,17 @@ test('a complete runtime waits for clients, then switches on the last close',asy
  updated=true;await until(()=>f.health().pendingExecutable===next);assert.equal(fake.children.length,1);assert.equal(fake.children[0].kills,0);
  socket.destroy();await until(()=>fake.children.length===2&&f.health().state==='ready');assert.ok(checks>0);assert.equal(fake.children[1].file,next);
 });
-for(const [name,journal] of [['active','{"task":{"status":"running"}}'],['unreadable','invalid json'],['missing',null]])test(`a ${name} phone journal keeps a complete runtime pending`,async t=>{
+for(const [name,journal] of [['active','{"task":{"status":"running"}}'],['unreadable','invalid json']])test(`a ${name} phone journal keeps a complete runtime pending`,async t=>{
  const f=await fixture(t),fake=natives(),next=path.join(f.dir,'new','codex.exe');let checks=0;
- const journalFile=path.join(f.dir,'remote-journal.json');if(journal===null)fs.unlinkSync(journalFile);else fs.writeFileSync(journalFile,journal);
+ fs.writeFileSync(path.join(f.dir,'remote-journal.json'),journal);
  await start(t,f,{spawnNative:fake.spawnNative,runtimeInterval:20,resolveAsync:async()=>next,checkNative:async()=>{checks++;return false;}});
  await until(()=>f.health().pendingExecutable===next);await delay(100);assert.equal(fake.children.length,1);assert.equal(checks,0);
+});
+test('a machine with no phone journal still switches a complete runtime when idle',async t=>{
+ const f=await fixture(t),fake=natives(),next=path.join(f.dir,'new','codex.exe');
+ fs.unlinkSync(path.join(f.dir,'remote-journal.json'));
+ await start(t,f,{spawnNative:fake.spawnNative,runtimeInterval:20,resolveAsync:async()=>next,checkNative:async()=>false});
+ await until(()=>fake.children.length===2&&f.health().state==='ready');assert.equal(fake.children[1].file,next);
 });
 for(const [name,checkNative] of [['active',async()=>true],['unknown',async()=>{throw Error('fixture');}],['indeterminate',async()=>undefined]])test(`${name} native activity keeps a complete runtime pending`,async t=>{
  const f=await fixture(t),fake=natives(),next=path.join(f.dir,'new','codex.exe');let checks=0;
