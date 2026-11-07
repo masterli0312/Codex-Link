@@ -19,37 +19,65 @@ if (Test-Path -LiteralPath $journal) {
         throw 'A phone task is still active. Finish or stop it before switching the native server.'
     }
 }
+function Get-SharedProperty($value, [string]$name) {
+    if ($null -eq $value) { return $null }
+    $property = $value.PSObject.Properties[$name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
 function Test-SharedSupervisor($process, $root) {
-    if (-not $process -or $process.Name -ne 'node.exe' -or -not $process.CommandLine) { return $false }
+    $commandLine = Get-SharedProperty $process 'CommandLine'
+    if ((Get-SharedProperty $process 'Name') -ne 'node.exe' -or -not $commandLine) { return $false }
     foreach ($name in @('shared-server.cjs', 'shared-start-if-needed.cjs')) {
         $scriptPath = [regex]::Escape((Join-Path $root $name))
-        if ($process.CommandLine -match ('(?i)(?:^|["\s])' + $scriptPath + '(?:["\s]|$)')) { return $true }
+        if ($commandLine -match ('(?i)(?:^|["\s])' + $scriptPath + '(?:["\s]|$)')) { return $true }
     }
     return $false
 }
 function Test-SharedNative($process, $health, $executable, $url, $relayMode) {
-    if (-not $process -or -not $process.CommandLine) { return $false }
+    $commandLine = Get-SharedProperty $process 'CommandLine'
+    $processExe = Get-SharedProperty $process 'ExecutablePath'
+    if (-not $commandLine -or -not $processExe) { return $false }
     if ($relayMode) {
         $port = 0
-        if (-not [int]::TryParse([string]$health.nativePort, [ref]$port) -or $port -lt 1 -or $port -gt 65535 -or
-            -not $health.nativeExecutable -or $process.ExecutablePath -ne $health.nativeExecutable) { return $false }
-        return $process.CommandLine -match ([regex]::Escape(('ws://127.0.0.1:' + $port)) + '(?=[/"\s]|$)')
+        $nativeExe = Get-SharedProperty $health 'nativeExecutable'
+        if (-not [int]::TryParse([string](Get-SharedProperty $health 'nativePort'), [ref]$port) -or $port -lt 1 -or $port -gt 65535 -or
+            -not $nativeExe -or $processExe -ne $nativeExe) { return $false }
+        return $commandLine -match ([regex]::Escape(('ws://127.0.0.1:' + $port)) + '(?=[/"\s]|$)')
     }
-    return $process.ExecutablePath -eq $executable -and $process.CommandLine.Contains($url.TrimEnd('/'))
+    return $executable -and $processExe -eq $executable -and $commandLine.Contains($url.TrimEnd('/'))
 }
 function Test-SharedOwnership($listeners, $health, $executable, $url, $root) {
-    if (-not $listeners.Count) { return $false }
-    $relayMode = $health.mode -eq 'relay'
-    if (-not $relayMode -and $health.mode -and $health.mode -notin @('reused', 'legacy')) { return $false }
-    $listenerPid = if ($relayMode) { $health.relayPid } else { $health.nativePid }
-    if (-not $listenerPid -or ($listeners | Where-Object { $_.OwningProcess -ne $listenerPid -or $_.LocalAddress -ne '127.0.0.1' })) { return $false }
+    if (-not @($listeners).Count -or $null -eq $listeners) { return $false }
+    $mode = Get-SharedProperty $health 'mode'
+    $relayMode = $mode -eq 'relay'
+    if (-not $relayMode -and $mode -and $mode -notin @('reused', 'legacy')) { return $false }
+    $listenerPid = 0; $nativePid = 0
+    $listenerValue = if ($relayMode) { Get-SharedProperty $health 'relayPid' } else { Get-SharedProperty $health 'nativePid' }
+    if (-not [int]::TryParse([string]$listenerValue, [ref]$listenerPid) -or $listenerPid -le 0 -or
+        -not [int]::TryParse([string](Get-SharedProperty $health 'nativePid'), [ref]$nativePid) -or $nativePid -le 0 -or
+        ($listeners | Where-Object { (Get-SharedProperty $_ 'OwningProcess') -ne $listenerPid -or (Get-SharedProperty $_ 'LocalAddress') -ne '127.0.0.1' })) { return $false }
     if ($relayMode) {
-        if ($health.relayPid -ne $health.supervisorPid) { return $false }
-        $supervisor = Get-CimInstance Win32_Process -Filter ('ProcessId=' + [int]$health.relayPid) -ErrorAction SilentlyContinue
+        if ($listenerPid -ne (Get-SharedProperty $health 'supervisorPid')) { return $false }
+        $supervisor = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $listenerPid) -ErrorAction SilentlyContinue
         if (-not (Test-SharedSupervisor $supervisor $root)) { return $false }
     }
-    $native = Get-CimInstance Win32_Process -Filter ('ProcessId=' + [int]$health.nativePid) -ErrorAction SilentlyContinue
+    $native = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $nativePid) -ErrorAction SilentlyContinue
     return Test-SharedNative $native $health $executable $url $relayMode
+}
+function Stop-SharedOwned($health, $settings, $url, $runtime) {
+    $mode = Get-SharedProperty $health 'mode'
+    foreach ($value in @((Get-SharedProperty $health 'supervisorPid'), (Get-SharedProperty $health 'nativePid'))) {
+        $processId = 0
+        if (-not [int]::TryParse([string]$value, [ref]$processId) -or $processId -le 0) { continue }
+        $owned = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $processId) -ErrorAction SilentlyContinue
+        $ownedPid = 0
+        if (-not $owned -or -not [int]::TryParse([string](Get-SharedProperty $owned 'ProcessId'), [ref]$ownedPid) -or $ownedPid -ne $processId) { continue }
+        $native = (Test-SharedNative $owned $health (Get-SharedProperty $settings 'codexExecutable') $url ($mode -eq 'relay')) -or
+            (Test-SharedNative $owned $health (Get-SharedProperty $health 'nativeExecutable') $url $false)
+        $supervisor = Test-SharedSupervisor $owned $runtime
+        if ($native -or $supervisor) { Stop-Process -Id $ownedPid -ErrorAction SilentlyContinue }
+    }
 }
 if ($Disable) {
     if ($settings.appServerUrl -and $settings.appServerUrl -ne $url) { throw 'This script does not own the configured shared server. No settings were changed.' }
@@ -63,15 +91,7 @@ if ($Disable) {
     $healthFile = Join-Path $runtime 'shared-server-health.json'
     if (Test-Path -LiteralPath $healthFile) {
         $health = Get-Content -LiteralPath $healthFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        foreach ($processId in @($health.supervisorPid, $health.nativePid)) {
-            if (-not $processId) { continue }
-            $owned = Get-CimInstance Win32_Process -Filter ('ProcessId=' + [int]$processId) -ErrorAction SilentlyContinue
-            if (-not $owned) { continue }
-            $native = (Test-SharedNative $owned $health $settings.codexExecutable $url ($health.mode -eq 'relay')) -or
-                (Test-SharedNative $owned $health $health.nativeExecutable $url $false)
-            $supervisor = Test-SharedSupervisor $owned $runtime
-            if ($native -or $supervisor) { Stop-Process -Id $owned.ProcessId -ErrorAction SilentlyContinue }
-        }
+        Stop-SharedOwned $health $settings $url $runtime
     }
     Write-Host 'Shared transport disabled. Launch Codex normally after signing out and back in, or after clearing CODEX_APP_SERVER_WS_URL in your terminal.'
     return

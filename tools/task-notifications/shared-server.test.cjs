@@ -12,6 +12,8 @@ async function listen(server){const port=await freePort();await new Promise((res
 async function freePort(){for(;;){const server=net.createServer(),port=crypto.randomInt(49152,65536);try{await new Promise((resolve,reject)=>{server.once('error',reject);server.listen({host:'127.0.0.1',port,exclusive:true},resolve);});}catch{continue;}await new Promise(resolve=>server.close(resolve));return port;}}
 async function fixture(t,health){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'shared-server-')),port=await freePort(),endpoint=`ws://127.0.0.1:${port}/`;
+ fs.mkdirSync(path.join(dir,'old'));fs.writeFileSync(path.join(dir,'old','codex.exe'),'fixture');fs.writeFileSync(path.join(dir,'old','codex-code-mode-host.exe'),'fixture');
+ fs.mkdirSync(path.join(dir,'new'));fs.writeFileSync(path.join(dir,'new','codex.exe'),'fixture');fs.writeFileSync(path.join(dir,'new','codex-code-mode-host.exe'),'fixture');
  fs.writeFileSync(path.join(dir,'connection.json'),'\uFEFF'+JSON.stringify({appServerUrl:endpoint,codexExecutable:path.join(dir,'old','codex.exe'),codexHome:path.join(dir,'home')}));
  fs.writeFileSync(path.join(dir,'remote-journal.json'),'{}');
  if(health)fs.writeFileSync(path.join(dir,'shared-server-health.json'),JSON.stringify(health));
@@ -19,7 +21,7 @@ async function fixture(t,health){
  t.after(async()=>{if(f.result?.close){f.result.close();await f.result.done;}assert.equal(path.dirname(dir),path.resolve(os.tmpdir()));fs.rmSync(dir,{recursive:true,force:true});});
  return f;
 }
-const options=extra=>({lockName:lockName(),resolveNative:file=>file,selectPort:freePort,nativeOptions:()=>({}),busyInterval:1,readyInterval:10,readyTimeout:1000,holdTimeout:1000,stopTimeout:100,runtimeInterval:0,retryDelays:[20,40,60],stableDelay:10,handleSignals:false,...extra});
+const options=extra=>({lockName:lockName(),resolveNative:file=>file,resolveAsync:async file=>file,selectPort:freePort,nativeOptions:()=>({}),busyInterval:1,readyInterval:10,readyTimeout:1000,holdTimeout:1000,stopTimeout:100,runtimeInterval:0,retryDelays:[20,40,60],stableDelay:10,handleSignals:false,...extra});
 function natives({delayListen=0,neverListen=false,onSpawn}={}){
  const children=[];
  const spawnNative=(file,args)=>{
@@ -54,6 +56,74 @@ test('new clients during a native restart reach the new generation without refus
  fake.children[0].exit();await until(()=>f.health().state==='reconnecting');
  const client=connect(f.port),data=[];client.on('data',b=>data.push(b));await once(client,'connect');client.write('WHO');
  await once(client,'end');assert.equal(Buffer.concat(data).toString(),'2');client.destroy();
+});
+for(const removed of ['executable','sidecar'])test(`restart resolves a new runtime after the ${removed} is removed`,async t=>{
+ const f=await fixture(t),fake=natives(),next=path.join(f.dir,'new','codex.exe');let resolutions=0;
+ await start(t,f,{spawnNative:fake.spawnNative,resolveAsync:async()=>{resolutions++;return next;}});await until(()=>f.health().state==='ready');
+ fs.unlinkSync(path.join(f.dir,'old',removed==='executable'?'codex.exe':'codex-code-mode-host.exe'));fake.children[0].exit();
+ await until(()=>fake.children.length===2&&f.health().state==='ready');assert.equal(fake.children[1].file,next);assert.ok(resolutions>0);
+});
+test('resolver failures continue retrying with no native generation',async t=>{
+ const f=await fixture(t),fake=natives(),next=path.join(f.dir,'new','codex.exe');let attempts=0;
+ await start(t,f,{spawnNative:fake.spawnNative,resolveNative:()=>{throw Error('fixture');},runtimeInterval:15,resolveAsync:async()=>{if(++attempts<4)throw Error('fixture');return next;}});
+ await until(()=>fake.children.length===1&&f.health().state==='ready');assert.ok(attempts>=4);assert.equal(fake.children[0].file,next);
+});
+test('resolver failures after sidecar pruning never respawn the incomplete runtime',async t=>{
+ const f=await fixture(t),fake=natives(),next=path.join(f.dir,'new','codex.exe');let attempts=0;
+ await start(t,f,{spawnNative:fake.spawnNative,runtimeInterval:15,resolveAsync:async()=>{if(++attempts<4)throw Error('fixture');return next;}});
+ await until(()=>f.health().state==='ready');fs.unlinkSync(path.join(f.dir,'old','codex-code-mode-host.exe'));fake.children[0].exit();
+ await until(()=>fake.children.length===2&&f.health().state==='ready');assert.ok(attempts>=4);assert.equal(fake.children[1].file,next);
+});
+test('a spawn failure clears the runtime and re-resolves before retrying',async t=>{
+ const f=await fixture(t),fake=natives(),next=path.join(f.dir,'new','codex.exe');let attempts=0,resolutions=0;
+ const spawnNative=(...args)=>{if(++attempts===1){const child=new EventEmitter();child.stderr=new EventEmitter();process.nextTick(()=>child.emit('error',Error('fixture')));return child;}return fake.spawnNative(...args);};
+ await start(t,f,{spawnNative,resolveAsync:async()=>{resolutions++;return next;}});await until(()=>fake.children.length===1&&f.health().state==='ready');
+ assert.equal(resolutions,1);assert.equal(fake.children[0].file,next);
+});
+test('never-ready timeouts double and reset after a ready generation',async t=>{
+ const f=await fixture(t),born=[],stopped=[],fake=natives({neverListen:n=>[1,2,4].includes(n),onSpawn:(child,n)=>{
+  born[n]=Date.now();const kill=child.kill;child.kill=()=>{stopped[n]=Date.now();return kill();};
+ }});
+ await start(t,f,{spawnNative:fake.spawnNative,readyTimeout:80,readyTimeoutMax:320,readyInterval:5,retryDelays:[10]});
+ await until(()=>fake.children.length===3&&f.health().state==='ready');fake.children[2].exit();await until(()=>fake.children.length===5&&f.health().state==='ready');
+ const first=stopped[1]-born[1],second=stopped[2]-born[2],reset=stopped[4]-born[4];
+ assert.ok(first>=65&&second>=140,`${first},${second},${reset}`);assert.ok(second>first*1.4&&reset<second*0.8,`${first},${second},${reset}`);
+});
+test('a request half-close can receive a delayed response',async t=>{
+ const f=await fixture(t),sockets=new Set();let server;
+ const spawnNative=(file,args)=>{const child=new EventEmitter();child.pid=41000;child.stderr=new EventEmitter();
+  server=net.createServer({allowHalfOpen:true},socket=>{sockets.add(socket);socket.on('error',()=>{});socket.on('close',()=>sockets.delete(socket));socket.resume();socket.on('end',()=>setTimeout(()=>socket.end('delayed response'),60));});
+  server.listen({host:'127.0.0.1',port:Number(new URL(args.at(-1)).port),exclusive:true});child.kill=()=>{for(const socket of sockets)socket.destroy();server.close(()=>child.emit('exit',0));return true;};return child;};
+ await start(t,f,{spawnNative,probe:async endpoint=>endpoint===f.endpoint?'free':'ready'});await until(()=>server?.listening&&f.health().state==='ready');
+ const socket=net.connect({host:'127.0.0.1',port:f.port,allowHalfOpen:true}),chunks=[];socket.on('error',()=>{});socket.on('data',b=>chunks.push(b));await once(socket,'connect');
+ const ended=once(socket,'end');socket.end('request');await ended;assert.equal(Buffer.concat(chunks).toString(),'delayed response');socket.destroy();
+});
+test('a failed upstream before admission preserves initial bytes for the next generation',async t=>{
+ const f=await fixture(t),fake=natives({neverListen:n=>n===1});let attempts=0;
+ const connectUpstream=opts=>{const socket=net.connect(opts);if(++attempts===1)socket.once('error',()=>fake.children[0].exit());return socket;};
+ await start(t,f,{spawnNative:fake.spawnNative,connectUpstream,probe:async endpoint=>endpoint===f.endpoint?'free':'ready',admissionRetry:15});
+ await until(()=>f.health().state==='ready');const socket=connect(f.port),chunks=[];socket.on('data',b=>chunks.push(b));await once(socket,'connect');
+ const end=new Promise(resolve=>socket.once('end',resolve));socket.write('WHO');await end;assert.equal(Buffer.concat(chunks).toString(),'2');socket.destroy();
+});
+test('a slow reader receives a complete large response after a half-close',async t=>{
+ const f=await fixture(t),payload=crypto.randomBytes(8*1024*1024),expected=crypto.createHash('sha256').update(payload).digest('hex'),sockets=new Set();let server,count=0,closedAt=-1;
+ const spawnNative=(file,args)=>{const child=new EventEmitter();child.pid=41000;child.stderr=new EventEmitter();server=net.createServer({allowHalfOpen:true},socket=>{
+  sockets.add(socket);socket.on('error',()=>{});socket.on('close',()=>{sockets.delete(socket);closedAt=count;});socket.resume();socket.on('end',()=>socket.end(payload));
+ });server.listen({host:'127.0.0.1',port:Number(new URL(args.at(-1)).port),exclusive:true});child.kill=()=>{for(const socket of sockets)socket.destroy();server.close(()=>child.emit('exit',0));return true;};return child;};
+ await start(t,f,{spawnNative,probe:async endpoint=>endpoint===f.endpoint?'free':'ready'});await until(()=>server?.listening&&f.health().state==='ready');
+ const socket=net.connect({host:'127.0.0.1',port:f.port,allowHalfOpen:true}),hash=crypto.createHash('sha256');socket.on('error',()=>{});
+ socket.on('data',chunk=>{count+=chunk.length;hash.update(chunk);socket.pause();setTimeout(()=>socket.resume(),1);});socket.pause();await once(socket,'connect');
+ const ended=once(socket,'end');socket.end('request');await delay(120);socket.resume();await ended;await until(()=>closedAt>=0);assert.ok(closedAt<payload.length);assert.equal(count,payload.length);assert.equal(hash.digest('hex'),expected);socket.destroy();
+});
+test('a half-closed pair is bounded and both relay sockets disable Nagle',async t=>{
+ const f=await fixture(t),sockets=new Set(),flags=[];let server;
+ const spawnNative=(file,args)=>{const child=new EventEmitter();child.pid=41000;child.stderr=new EventEmitter();server=net.createServer({allowHalfOpen:true},socket=>{sockets.add(socket);socket.on('error',()=>{});socket.on('close',()=>sockets.delete(socket));socket.resume();});
+  server.listen({host:'127.0.0.1',port:Number(new URL(args.at(-1)).port),exclusive:true});child.kill=()=>{for(const socket of sockets)socket.destroy();server.close(()=>child.emit('exit',0));return true;};return child;};
+ const wrap=(socket,side)=>{const original=socket.setNoDelay;socket.setNoDelay=function(value){flags.push([side,value]);return original.call(this,value);};return socket;};
+ await start(t,f,{spawnNative,drainTimeout:80,probe:async endpoint=>endpoint===f.endpoint?'free':'ready',
+  createRelay:handler=>net.createServer({pauseOnConnect:true,allowHalfOpen:true},socket=>handler(wrap(socket,'client'))),connectUpstream:opts=>wrap(net.connect(opts),'upstream')});
+ await until(()=>server?.listening&&f.health().state==='ready');const socket=net.connect({host:'127.0.0.1',port:f.port,allowHalfOpen:true});socket.on('error',()=>{});await once(socket,'connect');
+ const closed=new Promise(resolve=>socket.once('close',resolve));socket.end('request');await closed;assert.deepEqual(flags,[['client',true],['upstream',true]]);
 });
 
 test('held clients time out while a native is not ready',async t=>{
@@ -123,12 +193,11 @@ test('a missing sidecar causes an urgent stop even with clients and activity',as
  const f=await fixture(t),fake=natives();let updated=false;
  await start(t,f,{spawnNative:fake.spawnNative,runtimeInterval:30,resolveAsync:async()=>updated?path.join(f.dir,'new','codex.exe'):path.join(f.dir,'old','codex.exe'),checkPhone:()=>true,checkNative:async()=>true});
  await until(()=>f.health().state==='ready');const socket=connect(f.port);await once(socket,'connect');const response=once(socket,'data');socket.write('echo');await response;
- const closed=once(socket,'close');updated=true;await closed;await until(()=>fake.children.length===2&&f.health().state==='ready');
+ const closed=once(socket,'close');fs.unlinkSync(path.join(f.dir,'old','codex-code-mode-host.exe'));updated=true;await closed;await until(()=>fake.children.length===2&&f.health().state==='ready');
  assert.equal(fake.children[0].kills,1);assert.equal(fake.children[1].file,path.join(f.dir,'new','codex.exe'));
 });
 test('a complete runtime waits for clients, then switches on the last close',async t=>{
  const f=await fixture(t),fake=natives();let updated=false,checks=0;
- fs.mkdirSync(path.join(f.dir,'old'));fs.writeFileSync(path.join(f.dir,'old','codex-code-mode-host.exe'),'fixture');
  const old=path.join(f.dir,'old','codex.exe'),next=path.join(f.dir,'new','codex.exe');
  await start(t,f,{spawnNative:fake.spawnNative,runtimeInterval:25,resolveAsync:async()=>updated?next:old,checkNative:async()=>{checks++;return false;}});
  await until(()=>f.health().state==='ready');const socket=connect(f.port);await once(socket,'connect');const response=once(socket,'data');socket.write('echo');await response;
@@ -137,14 +206,12 @@ test('a complete runtime waits for clients, then switches on the last close',asy
 });
 for(const [name,journal] of [['active','{"task":{"status":"running"}}'],['unreadable','invalid json'],['missing',null]])test(`a ${name} phone journal keeps a complete runtime pending`,async t=>{
  const f=await fixture(t),fake=natives(),next=path.join(f.dir,'new','codex.exe');let checks=0;
- fs.mkdirSync(path.join(f.dir,'old'));fs.writeFileSync(path.join(f.dir,'old','codex-code-mode-host.exe'),'fixture');
  const journalFile=path.join(f.dir,'remote-journal.json');if(journal===null)fs.unlinkSync(journalFile);else fs.writeFileSync(journalFile,journal);
  await start(t,f,{spawnNative:fake.spawnNative,runtimeInterval:20,resolveAsync:async()=>next,checkNative:async()=>{checks++;return false;}});
  await until(()=>f.health().pendingExecutable===next);await delay(100);assert.equal(fake.children.length,1);assert.equal(checks,0);
 });
 for(const [name,checkNative] of [['active',async()=>true],['unknown',async()=>{throw Error('fixture');}],['indeterminate',async()=>undefined]])test(`${name} native activity keeps a complete runtime pending`,async t=>{
  const f=await fixture(t),fake=natives(),next=path.join(f.dir,'new','codex.exe');let checks=0;
- fs.mkdirSync(path.join(f.dir,'old'));fs.writeFileSync(path.join(f.dir,'old','codex-code-mode-host.exe'),'fixture');
  await start(t,f,{spawnNative:fake.spawnNative,runtimeInterval:20,resolveAsync:async()=>next,checkNative:async endpoint=>{checks++;return checkNative(endpoint);}});
  await until(()=>f.health().pendingExecutable===next&&checks>0);await delay(80);assert.equal(fake.children.length,1);assert.equal(fake.children[0].kills,0);
 });
@@ -156,6 +223,34 @@ test('native activity checks every loaded page and treats unknown statuses as ac
  }}
  assert.equal(await nativeActive(endpoint,500,Client),false);assert.equal(calls.filter(c=>c[0]==='thread/read').length,2);
  for(const value of ['active','unknown']){status=value;calls=[];assert.equal(await nativeActive(endpoint,500,Client),true);}
+});
+test('native activity uses real WebSockets, closes on timeout, and never answers server requests',async t=>{
+ const frame=value=>{const body=Buffer.from(JSON.stringify(value));return Buffer.concat([body.length<126?Buffer.from([129,body.length]):Buffer.from([129,126,body.length>>8,body.length&255]),body]);};
+ for(const mode of ['idle','active','timeout','malformed','invalid-json']){
+  const sockets=new Set(),responses=[];let requests=0;
+  const server=http.createServer();server.on('upgrade',(req,socket)=>{
+   sockets.add(socket);socket.on('error',()=>{});socket.on('close',()=>sockets.delete(socket));
+   const accept=crypto.createHash('sha1').update(req.headers['sec-websocket-key']+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+   socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: '+accept+'\r\n\r\n');let buffer=Buffer.alloc(0);
+   socket.on('data',chunk=>{buffer=Buffer.concat([buffer,chunk]);while(buffer.length>=2){
+    const opcode=buffer[0]&15;let length=buffer[1]&127,offset=2;if(length===126){if(buffer.length<4)return;length=buffer.readUInt16BE(2);offset=4;}
+    if(length===127){socket.destroy();return;}const masked=!!(buffer[1]&128);if(!masked){socket.destroy();return;}if(buffer.length<offset+4+length)return;
+    const mask=buffer.subarray(offset,offset+4),body=Buffer.from(buffer.subarray(offset+4,offset+4+length));buffer=buffer.subarray(offset+4+length);
+    for(let i=0;i<body.length;i++)body[i]^=mask[i%4];if(opcode===8){socket.end(Buffer.from([136,0]));return;}if(opcode!==1)continue;
+    let row;try{row=JSON.parse(body.toString());}catch{socket.destroy();return;}if(row.id===9000&&!row.method)responses.push(row);
+    if(row.method==='initialize'){
+     if(mode==='timeout')continue;
+     socket.write(Buffer.concat([frame({id:row.id,result:{}}),frame({id:9000,method:'item/commandExecution/requestApproval',params:{}})]));requests++;
+    }else if(row.method==='thread/loaded/list')socket.write(mode==='invalid-json'?Buffer.from([129,1,123]):frame({id:row.id,result:mode==='malformed'?{data:'bad',nextCursor:null}:{data:['fixture-thread'],nextCursor:null}}));
+    else if(row.method==='thread/read')socket.write(frame({id:row.id,result:{thread:{id:'fixture-thread',status:{type:mode}}}}));
+   }});
+  });
+  const port=await listen(server);t.after(()=>{for(const socket of sockets)socket.destroy();if(server.listening)server.close();});
+  const born=Date.now(),active=await nativeActive(`ws://127.0.0.1:${port}/`,mode==='timeout'?150:1000);
+  assert.equal(active,mode!=='idle',mode);if(mode==='timeout')assert.ok(Date.now()-born<1000);
+  await until(()=>sockets.size===0,2000);assert.deepEqual(responses,[]);if(mode!=='timeout')assert.equal(requests,1);
+  await new Promise(resolve=>server.close(resolve));
+ }
 });
 test('slow runtime resolution does not block an existing relay',async t=>{
  const f=await fixture(t),fake=natives();let release,started=false;
@@ -172,7 +267,6 @@ test('a stale runtime resolution cannot switch a newer generation',async t=>{
 });
 test('a client arriving during an activity check prevents a pending switch',async t=>{
  const f=await fixture(t),fake=natives(),next=path.join(f.dir,'new','codex.exe');let release,checking=false;
- fs.mkdirSync(path.join(f.dir,'old'));fs.writeFileSync(path.join(f.dir,'old','codex-code-mode-host.exe'),'fixture');
  await start(t,f,{spawnNative:fake.spawnNative,runtimeInterval:20,resolveAsync:async()=>next,checkNative:()=>{checking=true;return new Promise(resolve=>{release=resolve;});}});
  await until(()=>f.health().state==='ready'&&checking);const socket=connect(f.port);await once(socket,'connect');const response=once(socket,'data');socket.write('echo');await response;
  release(false);await delay(60);assert.equal(fake.children.length,1);assert.equal(fake.children[0].kills,0);socket.destroy();
@@ -219,6 +313,25 @@ for(const kind of ['lease','listener'])test(`${kind} failure stops the owned nat
  await until(()=>f.health().state==='ready');(kind==='lease'?lease:relay).emit('error',Error('fixture'));
  assert.equal((await result.done).state,'blocked');assert.equal(fake.children[0].kills,1);assert.equal(f.health().error,kind==='lease'?'LEASE_LOST':'RELAY_ERROR');
 });
+for(const kind of ['lease','listener'])test(`${kind} failure upgrades a graceful shutdown to blocked`,async t=>{
+ const f=await fixture(t),fake=natives({onSpawn:child=>{child.kill=()=>{child.kills++;return false;};}});let lease,relay;
+ const result=await start(t,f,{spawnNative:fake.spawnNative,acquireLease:async name=>lease=await acquireSupervisor(name),createRelay:handler=>relay=net.createServer({pauseOnConnect:true,allowHalfOpen:true},handler)});
+ await until(()=>f.health().state==='ready');result.close();assert.equal(fake.children[0].kills,1);
+ (kind==='lease'?lease:relay).emit('error',Error('fixture'));assert.equal(f.health().state,'blocked');assert.equal(f.health().error,kind==='lease'?'LEASE_LOST':'RELAY_ERROR');
+ fake.children[0].exit();assert.equal((await result.done).state,'blocked');
+});
+test('unexpected lease close during graceful shutdown upgrades the outcome',async t=>{
+ const f=await fixture(t),fake=natives({onSpawn:child=>{child.kill=()=>false;}});let lease;
+ const result=await start(t,f,{spawnNative:fake.spawnNative,acquireLease:async name=>lease=await acquireSupervisor(name)});
+ await until(()=>f.health().state==='ready');result.close();lease.close();await until(()=>f.health().error==='LEASE_LOST');
+ fake.children[0].exit();assert.equal((await result.done).state,'blocked');
+});
+test('unexpected listener close racing graceful shutdown upgrades the outcome',async t=>{
+ const f=await fixture(t),fake=natives({onSpawn:child=>{child.kill=()=>false;}});let relay;
+ const result=await start(t,f,{spawnNative:fake.spawnNative,createRelay:handler=>relay=net.createServer({pauseOnConnect:true,allowHalfOpen:true},handler)});
+ await until(()=>f.health().state==='ready');relay.close();result.close();await until(()=>f.health().error==='RELAY_ERROR');
+ fake.children[0].exit();assert.equal((await result.done).state,'blocked');
+});
 test('lease loss keeps ownership while the native has not confirmed exit',async t=>{
  const f=await fixture(t),fake=natives({onSpawn:child=>{child.kill=()=>false;}}),name=lockName();let lease;
  const result=await start(t,f,{lockName:name,spawnNative:fake.spawnNative,platform:'win32',stopTimeout:30,killNativeTree:async()=>{},acquireLease:async n=>lease=await acquireSupervisor(n)});
@@ -241,6 +354,15 @@ test('an uncaught supervisor exception stops its native and exits nonzero',async
  const child=spawn(process.execPath,['-e',script,path.join(assets,'shared-server.cjs'),f.dir,name,String(port)],{stdio:['ignore','pipe','pipe'],windowsHide:true});
  let output='';child.stdout.on('data',b=>output+=b);const [code]=await once(child,'exit');assert.equal(code,1);assert.ok(output.includes('STOPPED'));assert.equal(f.health().error,'UNCAUGHT_EXCEPTION');
 });
+test('an uncaught exception after SIGTERM exits nonzero even during graceful shutdown',async t=>{
+ const f=await fixture(t),port=await freePort(),name=lockName();
+ const script=`const {run}=require(process.argv[1]),{EventEmitter}=require('node:events');let count=0;
+ run(process.argv[2],{lockName:process.argv[3],resolveNative:f=>f,selectPort:async()=>Number(process.argv[4]),nativeOptions:()=>({}),runtimeInterval:0,readyInterval:5,
+ probe:async()=>++count===1?'free':'ready',spawnNative:()=>{const child=new EventEmitter();child.pid=43210;child.stderr=new EventEmitter();child.kill=()=>{process.stdout.write('STOPPING');setTimeout(()=>child.emit('exit',1),100);return true;};return child;}});
+ setTimeout(()=>{process.emit('SIGTERM');setTimeout(()=>{throw Error('fixture');},20);},150);`;
+ const child=spawn(process.execPath,['-e',script,path.join(assets,'shared-server.cjs'),f.dir,name,String(port)],{stdio:['ignore','pipe','pipe'],windowsHide:true});
+ let output='';child.stdout.on('data',b=>output+=b);const [code]=await once(child,'exit');assert.equal(code,1);assert.ok(output.includes('STOPPING'));assert.equal(f.health().error,'UNCAUGHT_EXCEPTION');
+});
 test('hard-killing the supervisor also ends its real direct native child on Windows',async t=>{
  if(process.platform!=='win32'){t.skip('Windows-only child lifetime');return;}
  const f=await fixture(t),port=await freePort(),name=lockName();
@@ -259,20 +381,25 @@ test('hard-killing the supervisor also ends its real direct native child on Wind
 test('PowerShell ownership checks accept only the expected relay and legacy fixtures',async t=>{
  if(process.platform!=='win32'){t.skip('Windows-specific ownership checks');return;}
  const file=path.join(assets,'Enable-SharedConversations.ps1').replace(/'/g,"''"),port=await freePort(),publicPort=await freePort();
- const script=`$tokens=$null;$errors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile('${file}',[ref]$tokens,[ref]$errors);if($errors.Count){exit 10}
- foreach($name in @('Test-SharedSupervisor','Test-SharedNative','Test-SharedOwnership')){$fn=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true);if(-not $fn){exit 11};Invoke-Expression $fn.Extent.Text}
+ const script=`Set-StrictMode -Version Latest;$ErrorActionPreference='Stop';$tokens=$null;$errors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile('${file}',[ref]$tokens,[ref]$errors);if($errors.Count){exit 10}
+ foreach($name in @('Get-SharedProperty','Test-SharedSupervisor','Test-SharedNative','Test-SharedOwnership','Stop-SharedOwned')){$fn=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true);if(-not $fn){exit 11};Invoke-Expression $fn.Extent.Text}
  function Get-CimInstance {param($Class,$Filter,$ErrorAction) return $script:rows[$Filter]}
+ function Stop-Process {param([int]$Id,$ErrorAction) $script:stops+= $Id}
  $root=Join-Path ([IO.Path]::GetTempPath()) 'fixture-runtime';$exe=Join-Path $root 'codex.exe';$url='ws://127.0.0.1:${publicPort}/'
- $script:rows=@{'ProcessId=100'=[pscustomobject]@{Name='node.exe';CommandLine=('node.exe "'+(Join-Path $root 'shared-start-if-needed.cjs')+'"')};
- 'ProcessId=200'=[pscustomobject]@{Name='codex.exe';ExecutablePath=$exe;CommandLine='codex.exe app-server --listen ws://127.0.0.1:${port}'}}
+ $script:rows=@{'ProcessId=100'=[pscustomobject]@{ProcessId=100;Name='node.exe';CommandLine=('node.exe "'+(Join-Path $root 'shared-start-if-needed.cjs')+'"')};
+ 'ProcessId=200'=[pscustomobject]@{ProcessId=200;Name='codex.exe';ExecutablePath=$exe;CommandLine='codex.exe app-server --listen ws://127.0.0.1:${port}'}}
  $health=[pscustomobject]@{mode='relay';relayPid=100;supervisorPid=100;nativePid=200;nativePort=${port};nativeExecutable=$exe}
  $listeners=@([pscustomobject]@{OwningProcess=100;LocalAddress='127.0.0.1'})
  if(-not (Test-SharedOwnership $listeners $health $exe $url $root)){exit 1}
+ $script:stops=@();Stop-SharedOwned $health ([pscustomobject]@{codexExecutable=$exe}) $url $root;if(($script:stops -join ',') -ne '100,200'){exit 7}
+ if(Test-SharedOwnership $listeners ([pscustomobject]@{}) $exe $url $root){exit 8};$script:stops=@();Stop-SharedOwned ([pscustomobject]@{supervisorPid=100;nativePid=200;mode='relay'}) ([pscustomobject]@{}) $url $root;if(($script:stops -join ',') -ne '100'){exit 9}
+ if(Test-SharedNative ([pscustomobject]@{}) ([pscustomobject]@{}) $exe $url $true){exit 14};if(Test-SharedSupervisor ([pscustomobject]@{}) $root){exit 15};if(Test-SharedOwnership @([pscustomobject]@{OwningProcess=100}) $health $exe $url $root){exit 16}
  $script:rows['ProcessId=100'].CommandLine=('node.exe "'+(Join-Path $root 'shared-server.cjs.bak')+'"');if(Test-SharedOwnership $listeners $health $exe $url $root){exit 2}
  $script:rows['ProcessId=100'].CommandLine=('node.exe "'+(Join-Path $root 'shared-server.cjs')+'"');$script:rows['ProcessId=200'].CommandLine='codex.exe --listen ws://127.0.0.1:${port}0';if(Test-SharedOwnership $listeners $health $exe $url $root){exit 3}
  $script:rows['ProcessId=200'].CommandLine='codex.exe --listen ws://127.0.0.1:${port}';$script:rows['ProcessId=200'].ExecutablePath=Join-Path $root 'other.exe';if(Test-SharedOwnership $listeners $health $exe $url $root){exit 6};$script:rows['ProcessId=200'].ExecutablePath=$exe
  $script:rows['ProcessId=200'].CommandLine='codex.exe --listen ws://127.0.0.1:${publicPort}';$health.mode='reused';$listeners[0].OwningProcess=200
  if(-not (Test-SharedOwnership $listeners $health $exe $url $root)){exit 4}
+ $legacy=[pscustomobject]@{nativePid=200};if(-not (Test-SharedOwnership $listeners $legacy $exe $url $root)){exit 12};$script:stops=@();Stop-SharedOwned $legacy ([pscustomobject]@{codexExecutable=$exe}) $url $root;if(($script:stops -join ',') -ne '200'){exit 13}
  $listeners[0].LocalAddress='0.0.0.0';if(Test-SharedOwnership $listeners $health $exe $url $root){exit 5}`;
  const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{encoding:'utf8',windowsHide:true,timeout:10000});
  assert.equal(result.status,0,result.stdout+result.stderr);

@@ -79,11 +79,11 @@ async function nativeActive(endpoint,timeout=10000,Client=SharedCodexClient){
 }
 async function main(directory=__dirname,{
  spawnNative=spawn,probe=probeShared,resolveNative=resolveNativeExecutable,resolveAsync=resolveRuntime,selectPort=selectNativePort,
- acquireLease=acquireSupervisor,createRelay=handler=>net.createServer({pauseOnConnect:true},handler),killNativeTree=killTree,
+ acquireLease=acquireSupervisor,createRelay=handler=>net.createServer({pauseOnConnect:true,allowHalfOpen:true},handler),connectUpstream=options=>net.connect(options),killNativeTree=killTree,
  nativeOptions=cfg=>({env:{...process.env,CODEX_HOME:cfg.codexHome},stdio:['ignore','ignore','pipe'],windowsHide:true}),
  completeRuntime=runtimeComplete,checkPhone=phoneActive,checkNative=nativeActive,lockName,platform=process.platform,
- busyAttempts=8,busyInterval=1000,readyInterval=500,readyTimeout=20000,holdTimeout=30000,stopTimeout=10000,
- runtimeInterval=300000,retryDelays=[1000,2000,5000,10000,20000,30000],stableDelay=250,handleSignals=true,setFailClosed=()=>{},
+ busyAttempts=8,busyInterval=1000,readyInterval=500,readyTimeout=12000,readyTimeoutMax=60000,holdTimeout=30000,drainTimeout=30000,admissionRetry=50,stopTimeout=10000,
+ runtimeInterval=300000,retryDelays=[250,1000,2000,5000],stableDelay=250,handleSignals=true,setFailClosed=()=>{},
 }={}){
  const cfg=JSON.parse(fs.readFileSync(path.join(directory,'connection.json'),'utf8').replace(/^\uFEFF/,''));
  const pinned=cfg.codexExecutable,endpoint=localSharedEndpoint(cfg.appServerUrl||DEFAULT_SHARED_URL),publicUrl=new URL(endpoint);
@@ -92,8 +92,8 @@ async function main(directory=__dirname,{
  const writeHealth=state=>{try{fs.writeFileSync(healthFile,JSON.stringify({...state,updatedAt:Date.now()}));}catch{}};
  const lease=await acquireLease(lockName||supervisorLockName(endpoint));
  if(!lease)return {state:'supervised'};
- let relay,current,currentExecutable='',pendingExecutable=null,generation=0,lastPort=0,failures=0,closing=false,finalizing=false,starting=false,binding=false,closingError=null;
- let retryTimer,runtimeTimer,checking=false,resolving=false,exitState='stopped',state='starting',error=null,readyAt=null,finish;
+ let relay,current,currentExecutable='',pendingExecutable=null,generation=0,lastPort=0,failures=0,closing=false,finalizing=false,starting=false,binding=false,releasingLease=false,releasingRelay=false,closingError=null;
+ let retryTimer,runtimeTimer,checking=false,resolving=false,exitState='stopped',state='starting',error=null,readyAt=null,finish,readinessBudget=readyTimeout;
  const clients=new Map(),done=new Promise(resolve=>{finish=resolve;});
  const external=(value,reason)=>writeHealth({supervisorPid:0,relayPid:0,nativePid:0,nativePort:0,nativeExecutable:'',generation:0,clients:0,heldClients:0,
   pendingExecutable:null,readyAt:null,...previous(),mode:'reused',state:value,error:reason||null,checkedAt:Date.now()});
@@ -103,31 +103,51 @@ async function main(directory=__dirname,{
    nativeExecutable:current?.executable||currentExecutable||pinned,generation,clients:clients.size,heldClients:[...clients.values()].filter(c=>!c.admitted).length,
    pendingExecutable,state,error,readyAt,updatedAt:Date.now()});
  }
- function destroyClient(socket){const item=clients.get(socket);if(!item)return;clearTimeout(item.timer);item.upstream?.destroy();socket.destroy();}
- function dropGeneration(gen){for(const [socket,item] of clients)if(item.generation===gen)destroyClient(socket);}
+ function destroyClient(socket){const item=clients.get(socket);if(!item)return;clearTimeout(item.timer);clearTimeout(item.retryTimer);clearTimeout(item.drainTimer);item.upstream?.destroy();socket.destroy();}
+ function drain(socket,item){if(!item.drainTimer)item.drainTimer=setTimeout(()=>destroyClient(socket),drainTimeout);}
+ function unadmit(socket,item,upstream){
+  if(item.upstream!==upstream||item.admitted)return;
+  item.upstream=null;item.generation=null;upstream.destroy();
+  if(!closing&&!socket.destroyed){clearTimeout(item.retryTimer);item.retryTimer=setTimeout(()=>{item.retryTimer=null;admit(socket,item);},admissionRetry);}
+ }
+ function dropGeneration(gen){for(const [socket,item] of clients)if(item.generation===gen){if(item.admitted)destroyClient(socket);else unadmit(socket,item,item.upstream);}}
  function admit(socket,item){
   const gen=current;if(closing||!gen?.ready||gen.stopping||item.upstream||socket.destroyed)return;
-  const upstream=item.upstream=net.connect({host:'127.0.0.1',port:gen.port});item.generation=gen;
-  upstream.on('error',()=>destroyClient(socket));upstream.on('close',()=>destroyClient(socket));
+  clearTimeout(item.retryTimer);item.retryTimer=null;
+  const upstream=item.upstream=connectUpstream({host:'127.0.0.1',port:gen.port,allowHalfOpen:true});item.generation=gen;upstream.setNoDelay(true);
+  upstream.on('error',()=>{if(item.upstream!==upstream)return;if(item.admitted)destroyClient(socket);else unadmit(socket,item,upstream);});
+  upstream.on('end',()=>{if(item.upstream===upstream&&item.admitted)drain(socket,item);});
+  upstream.on('close',hadError=>{
+   if(item.upstream!==upstream)return;
+   if(!item.admitted){unadmit(socket,item,upstream);return;}
+   if(hadError||!upstream.readableEnded){destroyClient(socket);return;}
+   if(socket.writableFinished)socket.destroy();else socket.once('finish',()=>socket.destroy());
+  });
   upstream.once('connect',()=>{
-   if(closing||current!==gen||!gen.ready||gen.stopping||socket.destroyed){destroyClient(socket);return;}
+   if(item.upstream!==upstream)return;
+   if(closing||socket.destroyed){destroyClient(socket);return;}
+   if(current!==gen||!gen.ready||gen.stopping){unadmit(socket,item,upstream);return;}
    item.admitted=true;clearTimeout(item.timer);socket.pipe(upstream);upstream.pipe(socket);socket.resume();
   });
  }
  function accept(socket){
   if(closing){socket.destroy();return;}
-  socket.pause();const item={upstream:null,generation:null,timer:setTimeout(()=>destroyClient(socket),holdTimeout)};clients.set(socket,item);
+  socket.pause();socket.setNoDelay(true);const item={upstream:null,generation:null,timer:setTimeout(()=>destroyClient(socket),holdTimeout)};clients.set(socket,item);
+  socket.on('end',()=>{if(item.admitted)drain(socket,item);});
   socket.on('error',()=>destroyClient(socket));socket.on('close',()=>{
-   clearTimeout(item.timer);item.upstream?.destroy();clients.delete(socket);if(!clients.size)maybeSwitch();
+   clearTimeout(item.timer);clearTimeout(item.retryTimer);clearTimeout(item.drainTimer);item.upstream?.destroy();clients.delete(socket);if(!clients.size)maybeSwitch();
   });admit(socket,item);
  }
+ function retry(ms){clearTimeout(retryTimer);retryTimer=setTimeout(()=>{retryTimer=null;start();},ms);}
  function onExit(gen,spawnFailed=false){
   if(current!==gen)return;
   clearTimeout(gen.readyTimer);clearTimeout(gen.deadlineTimer);clearTimeout(gen.stopTimer);gen.ready=false;dropGeneration(gen);current=null;readyAt=null;
   if(closing){finalize();return;}
-  if(pendingExecutable){currentExecutable=pendingExecutable;pendingExecutable=null;if(gen.switching){failures=0;health('reconnecting',null);retryTimer=setTimeout(start,stableDelay);return;}}
+  if(spawnFailed){currentExecutable='';pendingExecutable=null;}
+  if(!gen.everReady&&!spawnFailed)readinessBudget=Math.min(readyTimeoutMax,readinessBudget*2);
+  if(pendingExecutable){currentExecutable=pendingExecutable;pendingExecutable=null;if(gen.switching){failures=0;health('reconnecting',null);retry(stableDelay);return;}}
   failures=Date.now()-gen.born>30000?0:failures+1;health('reconnecting',spawnFailed?'SPAWN_FAILED':null);
-  retryTimer=setTimeout(start,failures?retryDelays[Math.min(failures-1,retryDelays.length-1)]:stableDelay);
+  retry(failures?retryDelays[Math.min(failures-1,retryDelays.length-1)]:stableDelay);
  }
  function escalate(gen){
   if(current!==gen||!gen.stopping)return;
@@ -146,21 +166,22 @@ async function main(directory=__dirname,{
   if(finalizing||current||binding)return;finalizing=true;clearTimeout(retryTimer);clearTimeout(runtimeTimer);
   for(const socket of clients.keys())destroyClient(socket);
   health(exitState,exitState==='blocked'?closingError:null);
-  const release=()=>{try{lease.close();}catch{}finish({state:exitState});};
-  if(relay?.listening){try{relay.close(release);}catch{release();}}else release();
+  const release=()=>{releasingLease=true;try{lease.close();}catch{}finish({state:exitState});};
+  if(relay?.listening){releasingRelay=true;try{relay.close(release);}catch{release();}}else release();
  }
  function failClosed(reason='STOPPED',failed=true){
-  if(closing)return;closing=true;exitState=failed?'blocked':'stopped';closingError=failed?reason:null;
-  clearTimeout(retryTimer);clearTimeout(runtimeTimer);if(relay?.listening)try{relay.close();}catch{}
+  if(closing){if(failed&&exitState!=='blocked'){exitState='blocked';closingError=reason;health('blocked',reason);}return;}
+  closing=true;exitState=failed?'blocked':'stopped';closingError=failed?reason:null;
+  clearTimeout(retryTimer);clearTimeout(runtimeTimer);if(relay?.listening){releasingRelay=true;try{relay.close();}catch{}}
   for(const socket of clients.keys())destroyClient(socket);
   if(current)stopGeneration(current);else finalize();
  }
  setFailClosed(failClosed);
- lease.on('error',()=>failClosed('LEASE_LOST'));lease.on('close',()=>{if(!closing)failClosed('LEASE_LOST');});
+ lease.on('error',()=>failClosed('LEASE_LOST'));lease.on('close',()=>{if(!releasingLease)failClosed('LEASE_LOST');});
  const initial=await settledProbe(endpoint,{probe,attempts:busyAttempts,interval:busyInterval});
  if(closing){finalize();return {state:'supervising',done,close:()=>failClosed('STOPPED',false)};}
  if(initial!=='free'){
-  closing=true;try{lease.close();}catch{}
+  closing=true;releasingLease=true;try{lease.close();}catch{}
   if(initial==='ready'){external('reused');return {state:'reused'};}
   external('blocked','PORT_IN_USE_NOT_READY');return {state:'blocked'};
  }
@@ -172,7 +193,7 @@ async function main(directory=__dirname,{
   const failed=e=>{relay.removeListener('listening',ready);reject(e);},ready=()=>{relay.removeListener('error',failed);bound=true;resolve();};
   relay.once('error',failed);relay.once('listening',ready);relay.listen({host:'127.0.0.1',port:Number(publicUrl.port),exclusive:true});
  });}catch{binding=false;closing=true;exitState='blocked';closingError='PORT_IN_USE_NOT_READY';health('blocked',closingError);finalize();return {state:'blocked'};}binding=false;
- relay.on('close',()=>{if(!closing)failClosed('RELAY_ERROR');});
+ relay.on('close',()=>{if(!releasingRelay)failClosed('RELAY_ERROR');});
  if(closing){finalize();return {state:'supervising',done,close:()=>failClosed('STOPPED',false)};}
  function watchReady(gen){
   gen.readyTimer=setTimeout(async()=>{
@@ -180,7 +201,7 @@ async function main(directory=__dirname,{
    let result;try{result=await probe(`ws://127.0.0.1:${gen.port}/`);}catch{}
    if(closing||current!==gen||gen.stopping)return;
    if(result==='ready'){
-    gen.ready=true;clearTimeout(gen.deadlineTimer);readyAt=Date.now();health('ready',null);
+    gen.ready=true;gen.everReady=true;readinessBudget=readyTimeout;clearTimeout(gen.deadlineTimer);readyAt=Date.now();health('ready',null);
     for(const [socket,item] of clients)admit(socket,item);maybeSwitch();
    }else watchReady(gen);
   },readyInterval);
@@ -188,7 +209,11 @@ async function main(directory=__dirname,{
  async function start(){
   if(closing||current||starting)return;starting=true;
   try{
-   if(!currentExecutable)currentExecutable=await resolveAsync(pinned);
+   if(!currentExecutable||!fs.existsSync(currentExecutable)||!completeRuntime(currentExecutable)){
+    const previous=currentExecutable;
+    try{const next=await resolveAsync(pinned);if(!next||!fs.existsSync(next))throw Error('CODEX_MISSING');if(closing||current)return;currentExecutable=next;}
+    catch(e){if(!previous||!fs.existsSync(previous)||!completeRuntime(previous))currentExecutable='';throw e;}
+   }
    if(closing||current)return;
    if(!currentExecutable)throw Error('CODEX_MISSING');
    let port;for(let attempt=0;attempt<8;attempt++){port=await selectPort();if(closing||current)return;if(port!==lastPort)break;}
@@ -198,8 +223,9 @@ async function main(directory=__dirname,{
    catch{onExit(gen,true);return;}
    gen.child.stderr?.on('data',()=>{});gen.child.on('error',()=>{if(current===gen&&!gen.child.pid)onExit(gen,true);});
    gen.child.on('exit',()=>onExit(gen));health('starting',null);
-   gen.deadlineTimer=setTimeout(()=>{if(current===gen&&!gen.ready)stopGeneration(gen);},readyTimeout);watchReady(gen);
-  }catch{if(!closing){failures++;health('unavailable',currentExecutable?'NATIVE_PORT_UNAVAILABLE':'CODEX_MISSING');retryTimer=setTimeout(start,retryDelays[Math.min(failures-1,retryDelays.length-1)]);}}
+   // Desktop gives its handshake 15 s; allow an initial attempt within that budget, then grow for cold starts.
+   gen.deadlineTimer=setTimeout(()=>{if(current===gen&&!gen.ready)stopGeneration(gen);},readinessBudget);watchReady(gen);
+  }catch{if(!closing){failures++;health('unavailable',currentExecutable?'NATIVE_PORT_UNAVAILABLE':'CODEX_MISSING');retry(retryDelays[Math.min(failures-1,retryDelays.length-1)]);}}
   finally{starting=false;}
  }
  async function maybeSwitch(){
@@ -229,6 +255,7 @@ async function main(directory=__dirname,{
     }
    }catch{}finally{resolving=false;}
   }
+  if(!current&&!starting&&!retryTimer)start();
   if(!closing){maybeSwitch();if(runtimeInterval)runtimeTimer=setTimeout(runtimeTick,runtimeInterval);}
  }
  if(handleSignals){
@@ -239,7 +266,7 @@ async function main(directory=__dirname,{
  return {state:'supervising',done,close:()=>failClosed('STOPPED',false)};
 }
 function run(directory,options={}){
- let failClosed;const guard=()=>{if(failClosed)failClosed('UNCAUGHT_EXCEPTION');else process.exitCode=1;};
+ let failClosed;const guard=()=>{process.exitCode=1;if(failClosed)failClosed('UNCAUGHT_EXCEPTION');};
  process.on('uncaughtException',guard);
  main(directory,{...options,setFailClosed:fn=>{failClosed=fn;}}).then(result=>result.done||result).then(result=>{
   process.removeListener('uncaughtException',guard);if(result.state==='blocked')process.exitCode=1;
