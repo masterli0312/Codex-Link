@@ -1,125 +1,249 @@
 'use strict';
-// A single machine-local native server, independent of relay reconnections.
-// Coordination: one supervisor per endpoint (an OS-released pipe, not a PID file
-// that Windows may reuse); a listener answering /readyz is reused as-is; a port
-// held by anything else is reported, never competed with, and never stopped.
+// The lease owns the stable public listener; every native generation has a private port.
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),net=require('node:net'),http=require('node:http');
-const {spawn}=require('node:child_process');
-const {localSharedEndpoint}=require('./codex-client.cjs');
+const {spawn,execFile}=require('node:child_process');
+const {localSharedEndpoint,SharedCodexClient}=require('./codex-client.cjs');
 const {resolveNativeExecutable}=require('./native-runtime.cjs');
 const DEFAULT_SHARED_URL='ws://127.0.0.1:18475/';
 
-// 'ready' only for an HTTP 200 from /readyz; an open port alone proves nothing.
 function probeShared(endpoint,timeout=3000){
-  const url=new URL(endpoint);
-  return new Promise(resolve=>{
-    const request=http.get({host:url.hostname,port:Number(url.port),path:'/readyz',timeout,agent:false},response=>{
-      response.resume();resolve(response.statusCode===200?'ready':'busy');
-    });
-    request.on('timeout',()=>request.destroy(Error('SHARED_PROBE_TIMEOUT')));
-    request.on('error',error=>resolve(error.code==='ECONNREFUSED'?'free':'busy'));
-  });
+ const url=new URL(endpoint);
+ return new Promise(resolve=>{
+  const request=http.get({host:url.hostname,port:Number(url.port),path:'/readyz',timeout,agent:false},response=>{response.resume();resolve(response.statusCode===200?'ready':'busy');});
+  request.on('timeout',()=>request.destroy(Error('SHARED_PROBE_TIMEOUT')));
+  request.on('error',error=>resolve(error.code==='ECONNREFUSED'?'free':'busy'));
+ });
 }
-// A native server that is still binding answers late; give it time before calling the port foreign.
 async function settledProbe(endpoint,{probe=probeShared,attempts=8,interval=1000}={}){
-  let state=await probe(endpoint);
-  for(let attempt=1;state==='busy'&&attempt<attempts;attempt++){
-    await new Promise(resolve=>setTimeout(resolve,interval));state=await probe(endpoint);
-  }
-  return state;
+ let state=await probe(endpoint);
+ for(let attempt=1;state==='busy'&&attempt<attempts;attempt++){await new Promise(resolve=>setTimeout(resolve,interval));state=await probe(endpoint);}
+ return state;
 }
 function supervisorLockName(endpoint){
-  const port=new URL(endpoint).port;
-  return process.platform==='win32'?'\\\\.\\pipe\\codex-link-shared-server-'+port:path.join(os.tmpdir(),'codex-link-shared-server-'+port+'.sock');
+ const port=new URL(endpoint).port;
+ return process.platform==='win32'?'\\\\.\\pipe\\codex-link-shared-server-'+port:path.join(os.tmpdir(),'codex-link-shared-server-'+port+'.sock');
 }
 function acquireSupervisor(name){
-  return new Promise(resolve=>{
-    const server=net.createServer(socket=>socket.destroy());
-    server.once('error',error=>{
-      if(process.platform==='win32'||error.code!=='EADDRINUSE'){resolve(null);return;}
-      // A Unix socket file outlives a crashed owner; reclaim it only when nobody answers.
-      const peer=net.connect(name);
-      peer.once('connect',()=>{peer.destroy();resolve(null);});
-      peer.once('error',()=>{try{fs.unlinkSync(name);}catch{}acquireSupervisor(name).then(resolve);});
-    });
-    server.listen(name,()=>{server.unref();resolve(server);});
+ return new Promise(resolve=>{
+  const server=net.createServer(socket=>socket.destroy());
+  server.once('error',error=>{
+   if(process.platform==='win32'||error.code!=='EADDRINUSE'){resolve(null);return;}
+   const peer=net.connect(name);
+   peer.once('connect',()=>{peer.destroy();resolve(null);});
+   peer.once('error',()=>{try{fs.unlinkSync(name);}catch{}acquireSupervisor(name).then(resolve);});
   });
+  server.listen(name,()=>{server.unref();resolve(server);});
+ });
+}
+function selectNativePort(){
+ return new Promise((resolve,reject)=>{
+  const server=net.createServer();server.once('error',reject);
+  server.listen({host:'127.0.0.1',port:0,exclusive:true},()=>{const port=server.address().port;server.close(error=>error?reject(error):resolve(port));});
+ });
+}
+function resolveRuntime(pinned,timeout=10000){
+ return new Promise((resolve,reject)=>execFile(process.execPath,[path.join(__dirname,'native-runtime.cjs'),'--resolve',pinned||''],
+  {encoding:'utf8',windowsHide:true,timeout,maxBuffer:32768},(error,stdout)=>error?reject(error):resolve(stdout.trim())));
+}
+function killTree(pid){return new Promise(resolve=>execFile('taskkill',['/PID',String(pid),'/T','/F'],{windowsHide:true,timeout:10000},()=>resolve()));}
+function runtimeComplete(file){try{return fs.statSync(path.join(path.dirname(file),'codex-code-mode-host.exe')).isFile();}catch{return false;}}
+function phoneActive(directory){
+ try{
+  const entries=JSON.parse(fs.readFileSync(path.join(directory,'remote-journal.json'),'utf8').replace(/^\uFEFF/,''));
+  if(!entries||typeof entries!=='object'||Array.isArray(entries))return true;
+  return Object.values(entries).some(entry=>!entry||typeof entry!=='object'||typeof entry.status!=='string'||['accepted','running','approval','input_required','queued'].includes(entry.status));
+ }catch{return true;}
+}
+// Unlike thread/list, the loaded list covers all in-memory origins, including subagents.
+async function nativeActive(endpoint,timeout=10000,Client=SharedCodexClient){
+ const client=new Client(endpoint);let changed=false,timer;
+ client.setHandlers((method,params)=>{if(method==='turn/started'||method==='thread/started'||method==='thread/status/changed'&&params?.status?.type==='active')changed=true;},()=>{});
+ try{
+  return await Promise.race([(async()=>{
+   await client.connect();let cursor;const seen=new Set();
+   for(let page=0;page<100;page++){
+    const result=await client.call('thread/loaded/list',{limit:100,...(cursor?{cursor}:{})});
+    if(!Array.isArray(result?.data)||!Object.hasOwn(result,'nextCursor'))return true;
+    for(const id of result.data){
+     if(typeof id!=='string'||!id)return true;
+     const thread=(await client.call('thread/read',{threadId:id,includeTurns:false}))?.thread;
+     if(thread?.id!==id||!['idle','notLoaded','systemError'].includes(thread.status?.type))return true;
+    }
+    if(!result.nextCursor)return changed;
+    if(typeof result.nextCursor!=='string'||seen.has(result.nextCursor))return true;
+    cursor=result.nextCursor;seen.add(cursor);
+   }
+   return true;
+  })(),new Promise(resolve=>{timer=setTimeout(()=>resolve(true),timeout);})]);
+ }catch{return true;}finally{clearTimeout(timer);client.close();}
 }
 async function main(directory=__dirname,{
-  spawnNative=spawn,probe=probeShared,resolveNative=resolveNativeExecutable,lockName,
-  busyAttempts=8,busyInterval=1000,readyInterval=500,readyTimeout=60000,runtimeInterval=300000,handleSignals=true,
+ spawnNative=spawn,probe=probeShared,resolveNative=resolveNativeExecutable,resolveAsync=resolveRuntime,selectPort=selectNativePort,
+ acquireLease=acquireSupervisor,createRelay=handler=>net.createServer({pauseOnConnect:true},handler),killNativeTree=killTree,
+ nativeOptions=cfg=>({env:{...process.env,CODEX_HOME:cfg.codexHome},stdio:['ignore','ignore','pipe'],windowsHide:true}),
+ completeRuntime=runtimeComplete,checkPhone=phoneActive,checkNative=nativeActive,lockName,platform=process.platform,
+ busyAttempts=8,busyInterval=1000,readyInterval=500,readyTimeout=20000,holdTimeout=30000,stopTimeout=10000,
+ runtimeInterval=300000,retryDelays=[1000,2000,5000,10000,20000,30000],stableDelay=250,handleSignals=true,setFailClosed=()=>{},
 }={}){
-  const cfg=JSON.parse(fs.readFileSync(path.join(directory,'connection.json'),'utf8').replace(/^﻿/,''));
-  // The configured path is only a starting hint; each start re-resolves it against the installed desktop.
-  const pinned=cfg.codexExecutable;
-  const endpoint=localSharedEndpoint(cfg.appServerUrl||DEFAULT_SHARED_URL);
-  const healthFile=path.join(directory,'shared-server-health.json');
-  const previous=()=>{try{return JSON.parse(fs.readFileSync(healthFile,'utf8'));}catch{return {};}};
-  const writeHealth=state=>{try{fs.writeFileSync(healthFile,JSON.stringify({...state,updatedAt:Date.now()}));}catch{}};
-  const lease=await acquireSupervisor(lockName||supervisorLockName(endpoint));
-  if(!lease)return {state:'supervised'};
-  // Keep the earlier owner's PIDs so ownership checks still match the real listener.
-  const external=(state,error)=>writeHealth({...previous(),state,error,checkedAt:Date.now()});
-  const initial=await settledProbe(endpoint,{probe,attempts:busyAttempts,interval:busyInterval});
-  if(initial!=='free'){
-    lease.close();
-    if(initial==='ready'){external('reused');return {state:'reused'};}
-    external('blocked','PORT_IN_USE_NOT_READY');return {state:'blocked'};
-  }
-  let child,closing=false,failures=0,timer,readyTimer,runtimeTimer,finish;
-  const done=new Promise(resolve=>{finish=resolve;});
-  const health=state=>writeHealth({supervisorPid:process.pid,nativePid:child?.pid||0,nativeExecutable:cfg.codexExecutable,...state});
-  const close=(state='stopped')=>{
-    if(closing)return;closing=true;clearTimeout(timer);clearTimeout(readyTimer);clearTimeout(runtimeTimer);
-    if(state==='stopped')child?.kill();lease.close();finish({state});
-  };
-  const retry=()=>{timer=setTimeout(start,Math.min(30000,1000*2**Math.min(failures,5)));};
-  const watchReady=(current,born)=>{
-    readyTimer=setTimeout(async()=>{
-      if(closing||child!==current)return;
-      if(await probe(endpoint)==='ready'){if(!closing&&child===current)health({state:'ready',readyAt:Date.now()});return;}
-      if(Date.now()-born<readyTimeout)watchReady(current,born);
-      else if(!closing&&child===current)health({state:'starting',error:'NOT_READY'});
-    },readyInterval);
-  };
-  // A desktop update leaves a long-lived server on the previous runtime, whose sidecars it then prunes;
-  // move the server to the runtime the installed desktop now resolves to. The exit handler restarts it.
-  const watchRuntime=()=>{
-    if(!runtimeInterval)return;
-    runtimeTimer=setTimeout(()=>{
-      if(closing)return;
-      let next;try{next=resolveNative(pinned);}catch{}
-      if(next&&child&&next!==cfg.codexExecutable){health({state:'switching',nextExecutable:next});child.kill();}
-      watchRuntime();
-    },runtimeInterval);
-  };
-  function start(){
-    if(closing)return;
-    try{cfg.codexExecutable=resolveNative(pinned);}catch{
-      health({state:'unavailable',error:'CODEX_MISSING'});failures++;retry();return;
+ const cfg=JSON.parse(fs.readFileSync(path.join(directory,'connection.json'),'utf8').replace(/^\uFEFF/,''));
+ const pinned=cfg.codexExecutable,endpoint=localSharedEndpoint(cfg.appServerUrl||DEFAULT_SHARED_URL),publicUrl=new URL(endpoint);
+ const healthFile=path.join(directory,'shared-server-health.json');
+ const previous=()=>{try{return JSON.parse(fs.readFileSync(healthFile,'utf8'));}catch{return {};}};
+ const writeHealth=state=>{try{fs.writeFileSync(healthFile,JSON.stringify({...state,updatedAt:Date.now()}));}catch{}};
+ const lease=await acquireLease(lockName||supervisorLockName(endpoint));
+ if(!lease)return {state:'supervised'};
+ let relay,current,currentExecutable='',pendingExecutable=null,generation=0,lastPort=0,failures=0,closing=false,finalizing=false,starting=false,binding=false,closingError=null;
+ let retryTimer,runtimeTimer,checking=false,resolving=false,exitState='stopped',state='starting',error=null,readyAt=null,finish;
+ const clients=new Map(),done=new Promise(resolve=>{finish=resolve;});
+ const external=(value,reason)=>writeHealth({supervisorPid:0,relayPid:0,nativePid:0,nativePort:0,nativeExecutable:'',generation:0,clients:0,heldClients:0,
+  pendingExecutable:null,readyAt:null,...previous(),mode:'reused',state:value,error:reason||null,checkedAt:Date.now()});
+ function health(next=state,reason=error){
+  state=next;error=reason;
+  writeHealth({mode:'relay',supervisorPid:process.pid,relayPid:process.pid,nativePid:current?.child?.pid||0,nativePort:current?.port||0,
+   nativeExecutable:current?.executable||currentExecutable||pinned,generation,clients:clients.size,heldClients:[...clients.values()].filter(c=>!c.admitted).length,
+   pendingExecutable,state,error,readyAt,updatedAt:Date.now()});
+ }
+ function destroyClient(socket){const item=clients.get(socket);if(!item)return;clearTimeout(item.timer);item.upstream?.destroy();socket.destroy();}
+ function dropGeneration(gen){for(const [socket,item] of clients)if(item.generation===gen)destroyClient(socket);}
+ function admit(socket,item){
+  const gen=current;if(closing||!gen?.ready||gen.stopping||item.upstream||socket.destroyed)return;
+  const upstream=item.upstream=net.connect({host:'127.0.0.1',port:gen.port});item.generation=gen;
+  upstream.on('error',()=>destroyClient(socket));upstream.on('close',()=>destroyClient(socket));
+  upstream.once('connect',()=>{
+   if(closing||current!==gen||!gen.ready||gen.stopping||socket.destroyed){destroyClient(socket);return;}
+   item.admitted=true;clearTimeout(item.timer);socket.pipe(upstream);upstream.pipe(socket);socket.resume();
+  });
+ }
+ function accept(socket){
+  if(closing){socket.destroy();return;}
+  socket.pause();const item={upstream:null,generation:null,timer:setTimeout(()=>destroyClient(socket),holdTimeout)};clients.set(socket,item);
+  socket.on('error',()=>destroyClient(socket));socket.on('close',()=>{
+   clearTimeout(item.timer);item.upstream?.destroy();clients.delete(socket);if(!clients.size)maybeSwitch();
+  });admit(socket,item);
+ }
+ function onExit(gen,spawnFailed=false){
+  if(current!==gen)return;
+  clearTimeout(gen.readyTimer);clearTimeout(gen.deadlineTimer);clearTimeout(gen.stopTimer);gen.ready=false;dropGeneration(gen);current=null;readyAt=null;
+  if(closing){finalize();return;}
+  if(pendingExecutable){currentExecutable=pendingExecutable;pendingExecutable=null;if(gen.switching){failures=0;health('reconnecting',null);retryTimer=setTimeout(start,stableDelay);return;}}
+  failures=Date.now()-gen.born>30000?0:failures+1;health('reconnecting',spawnFailed?'SPAWN_FAILED':null);
+  retryTimer=setTimeout(start,failures?retryDelays[Math.min(failures-1,retryDelays.length-1)]:stableDelay);
+ }
+ function escalate(gen){
+  if(current!==gen||!gen.stopping)return;
+  health('blocked','NATIVE_STOP_FAILED');
+  try{if(platform==='win32'&&gen.child.pid)Promise.resolve(killNativeTree(gen.child.pid)).catch(()=>{});else gen.child.kill('SIGKILL');}catch{}
+  if(current===gen)gen.stopTimer=setTimeout(()=>escalate(gen),stopTimeout);
+ }
+ function stopGeneration(gen,switching=false){
+  if(current!==gen||gen.stopping)return;
+  gen.stopping=true;gen.switching=switching;gen.ready=false;clearTimeout(gen.readyTimer);clearTimeout(gen.deadlineTimer);dropGeneration(gen);
+  health(switching?'switching':closing?exitState:'stopping',closing?closingError:null);
+  try{gen.child.kill();}catch{}
+  if(current===gen)gen.stopTimer=setTimeout(()=>escalate(gen),stopTimeout);
+ }
+ function finalize(){
+  if(finalizing||current||binding)return;finalizing=true;clearTimeout(retryTimer);clearTimeout(runtimeTimer);
+  for(const socket of clients.keys())destroyClient(socket);
+  health(exitState,exitState==='blocked'?closingError:null);
+  const release=()=>{try{lease.close();}catch{}finish({state:exitState});};
+  if(relay?.listening){try{relay.close(release);}catch{release();}}else release();
+ }
+ function failClosed(reason='STOPPED',failed=true){
+  if(closing)return;closing=true;exitState=failed?'blocked':'stopped';closingError=failed?reason:null;
+  clearTimeout(retryTimer);clearTimeout(runtimeTimer);if(relay?.listening)try{relay.close();}catch{}
+  for(const socket of clients.keys())destroyClient(socket);
+  if(current)stopGeneration(current);else finalize();
+ }
+ setFailClosed(failClosed);
+ lease.on('error',()=>failClosed('LEASE_LOST'));lease.on('close',()=>{if(!closing)failClosed('LEASE_LOST');});
+ const initial=await settledProbe(endpoint,{probe,attempts:busyAttempts,interval:busyInterval});
+ if(closing){finalize();return {state:'supervising',done,close:()=>failClosed('STOPPED',false)};}
+ if(initial!=='free'){
+  closing=true;try{lease.close();}catch{}
+  if(initial==='ready'){external('reused');return {state:'reused'};}
+  external('blocked','PORT_IN_USE_NOT_READY');return {state:'blocked'};
+ }
+ try{currentExecutable=resolveNative(pinned);}catch{}
+ relay=createRelay(accept);
+ let bound=false;
+ relay.on('error',()=>{if(bound)failClosed('RELAY_ERROR');});
+ binding=true;try{await new Promise((resolve,reject)=>{
+  const failed=e=>{relay.removeListener('listening',ready);reject(e);},ready=()=>{relay.removeListener('error',failed);bound=true;resolve();};
+  relay.once('error',failed);relay.once('listening',ready);relay.listen({host:'127.0.0.1',port:Number(publicUrl.port),exclusive:true});
+ });}catch{binding=false;closing=true;exitState='blocked';closingError='PORT_IN_USE_NOT_READY';health('blocked',closingError);finalize();return {state:'blocked'};}binding=false;
+ relay.on('close',()=>{if(!closing)failClosed('RELAY_ERROR');});
+ if(closing){finalize();return {state:'supervising',done,close:()=>failClosed('STOPPED',false)};}
+ function watchReady(gen){
+  gen.readyTimer=setTimeout(async()=>{
+   if(closing||current!==gen||gen.stopping)return;
+   let result;try{result=await probe(`ws://127.0.0.1:${gen.port}/`);}catch{}
+   if(closing||current!==gen||gen.stopping)return;
+   if(result==='ready'){
+    gen.ready=true;clearTimeout(gen.deadlineTimer);readyAt=Date.now();health('ready',null);
+    for(const [socket,item] of clients)admit(socket,item);maybeSwitch();
+   }else watchReady(gen);
+  },readyInterval);
+ }
+ async function start(){
+  if(closing||current||starting)return;starting=true;
+  try{
+   if(!currentExecutable)currentExecutable=await resolveAsync(pinned);
+   if(closing||current)return;
+   if(!currentExecutable)throw Error('CODEX_MISSING');
+   let port;for(let attempt=0;attempt<8;attempt++){port=await selectPort();if(closing||current)return;if(port!==lastPort)break;}
+   if(port===lastPort)throw Error('NATIVE_PORT_UNAVAILABLE');lastPort=port;
+   const gen=current={number:++generation,port,executable:currentExecutable,born:Date.now(),ready:false,stopping:false,child:null};
+   try{gen.child=spawnNative(gen.executable,['-c','features.code_mode_host=true','app-server','--listen',`ws://127.0.0.1:${port}`],nativeOptions(cfg));}
+   catch{onExit(gen,true);return;}
+   gen.child.stderr?.on('data',()=>{});gen.child.on('error',()=>{if(current===gen&&!gen.child.pid)onExit(gen,true);});
+   gen.child.on('exit',()=>onExit(gen));health('starting',null);
+   gen.deadlineTimer=setTimeout(()=>{if(current===gen&&!gen.ready)stopGeneration(gen);},readyTimeout);watchReady(gen);
+  }catch{if(!closing){failures++;health('unavailable',currentExecutable?'NATIVE_PORT_UNAVAILABLE':'CODEX_MISSING');retryTimer=setTimeout(start,retryDelays[Math.min(failures-1,retryDelays.length-1)]);}}
+  finally{starting=false;}
+ }
+ async function maybeSwitch(){
+  const gen=current,next=pendingExecutable;
+  if(checking||closing||!next||!gen?.ready||gen.stopping||clients.size)return;
+  checking=true;
+  try{
+   if(await checkPhone(directory)!==false)return;
+   const active=await checkNative(`ws://127.0.0.1:${gen.port}/`);
+   const phoneNow=await checkPhone(directory);
+   if(closing||current!==gen||gen.stopping||!gen.ready||pendingExecutable!==next||clients.size||active!==false||phoneNow!==false)return;
+   stopGeneration(gen,true);
+  }catch{}finally{checking=false;}
+ }
+ async function runtimeTick(){
+  if(closing)return;
+  const gen=current;
+  if(gen&&!gen.stopping&&!resolving){
+   resolving=true;
+   try{
+    const next=await resolveAsync(pinned);
+    if(!closing&&current===gen&&!gen.stopping&&next){
+     if(next!==gen.executable){
+      if(pendingExecutable!==next){pendingExecutable=next;health(state,error);}
+      if(!completeRuntime(gen.executable))stopGeneration(gen,true);else maybeSwitch();
+     }else if(pendingExecutable){pendingExecutable=null;health(state,error);}
     }
-    const current=child=spawnNative(cfg.codexExecutable,['-c','features.code_mode_host=true','app-server','--listen',endpoint.replace(/\/$/, '')],{
-      env:{...process.env,CODEX_HOME:cfg.codexHome},stdio:['ignore','ignore','pipe'],windowsHide:true});
-    const born=Date.now();health({state:'starting'});current.stderr?.on('data',()=>{});watchReady(current,born);
-    let exited=false;const exit=async()=>{
-      if(exited)return;exited=true;
-      if(child===current){child=undefined;clearTimeout(readyTimer);}
-      if(closing){health({state:'stopped'});return;}
-      // Lost a start race or the port was taken meanwhile: step aside instead of looping.
-      const now=await probe(endpoint);
-      if(closing)return;
-      if(now==='ready'){external('reused');close('reused');return;}
-      if(now==='busy'){external('blocked','PORT_IN_USE_NOT_READY');close('blocked');return;}
-      health({state:'reconnecting'});failures=Date.now()-born>30000?0:failures+1;retry();
-    };
-    current.on('error',exit);current.on('exit',exit);
+   }catch{}finally{resolving=false;}
   }
-  if(handleSignals){process.on('SIGINT',()=>close());process.on('SIGTERM',()=>close());process.on('exit',()=>close());}
-  start();watchRuntime();
-  return {state:'supervising',done,close:()=>close()};
+  if(!closing){maybeSwitch();if(runtimeInterval)runtimeTimer=setTimeout(runtimeTick,runtimeInterval);}
+ }
+ if(handleSignals){
+  const stop=()=>failClosed('STOPPED',false);process.once('SIGINT',stop);process.once('SIGTERM',stop);
+  done.then(()=>{process.removeListener('SIGINT',stop);process.removeListener('SIGTERM',stop);});
+ }
+ start();if(runtimeInterval)runtimeTimer=setTimeout(runtimeTick,runtimeInterval);
+ return {state:'supervising',done,close:()=>failClosed('STOPPED',false)};
 }
-function run(directory){
-  main(directory).then(result=>result.done||result).then(result=>{if(result.state==='blocked')process.exitCode=1;},()=>{process.exitCode=1;});
+function run(directory,options={}){
+ let failClosed;const guard=()=>{if(failClosed)failClosed('UNCAUGHT_EXCEPTION');else process.exitCode=1;};
+ process.on('uncaughtException',guard);
+ main(directory,{...options,setFailClosed:fn=>{failClosed=fn;}}).then(result=>result.done||result).then(result=>{
+  process.removeListener('uncaughtException',guard);if(result.state==='blocked')process.exitCode=1;
+ },()=>{if(failClosed)failClosed('UNCAUGHT_EXCEPTION');process.exitCode=1;});
 }
 if(require.main===module)run(__dirname);
-module.exports={main,run,probeShared,settledProbe,acquireSupervisor,supervisorLockName,DEFAULT_SHARED_URL};
+module.exports={main,run,probeShared,settledProbe,acquireSupervisor,supervisorLockName,nativeActive,DEFAULT_SHARED_URL};
