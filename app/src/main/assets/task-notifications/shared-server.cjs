@@ -79,10 +79,10 @@ async function nativeActive(endpoint,timeout=10000,Client=SharedCodexClient){
 }
 async function main(directory=__dirname,{
  spawnNative=spawn,probe=probeShared,resolveNative=resolveNativeExecutable,resolveAsync=resolveRuntime,selectPort=selectNativePort,
- acquireLease=acquireSupervisor,createRelay=handler=>net.createServer({pauseOnConnect:true,allowHalfOpen:true},handler),connectUpstream=options=>net.connect(options),killNativeTree=killTree,
+ acquireLease=acquireSupervisor,createRelay=handler=>net.createServer({pauseOnConnect:true,allowHalfOpen:true},handler),connectUpstream=options=>net.connect(options),allocReplay=size=>Buffer.allocUnsafe(size),killNativeTree=killTree,
  nativeOptions=cfg=>({env:{...process.env,CODEX_HOME:cfg.codexHome},stdio:['ignore','ignore','pipe'],windowsHide:true}),
  completeRuntime=runtimeComplete,checkPhone=phoneActive,checkNative=nativeActive,lockName,platform=process.platform,
- busyAttempts=8,busyInterval=1000,readyInterval=500,readyTimeout=12000,readyTimeoutMax=60000,holdTimeout=30000,drainTimeout=30000,admissionRetry=50,stopTimeout=10000,
+ busyAttempts=8,busyInterval=1000,readyInterval=500,readyTimeout=12000,readyTimeoutMax=60000,holdTimeout=30000,responseTimeout=60000,replayLimit=65536,drainTimeout=30000,admissionRetry=50,stopTimeout=10000,
  runtimeInterval=300000,retryDelays=[250,1000,2000,5000],stableDelay=250,handleSignals=true,setFailClosed=()=>{},
 }={}){
  const cfg=JSON.parse(fs.readFileSync(path.join(directory,'connection.json'),'utf8').replace(/^\uFEFF/,''));
@@ -103,12 +103,36 @@ async function main(directory=__dirname,{
    nativeExecutable:current?.executable||currentExecutable||pinned,generation,clients:clients.size,heldClients:[...clients.values()].filter(c=>!c.admitted).length,
    pendingExecutable,state,error,readyAt,updatedAt:Date.now()});
  }
- function destroyClient(socket){const item=clients.get(socket);if(!item)return;clearTimeout(item.timer);clearTimeout(item.retryTimer);clearTimeout(item.drainTimer);item.upstream?.destroy();socket.destroy();}
+ function destroyClient(socket){const item=clients.get(socket);if(!item)return;clearTimeout(item.timer);clearTimeout(item.responseTimer);clearTimeout(item.retryTimer);clearTimeout(item.drainTimer);item.upstream?.destroy();socket.destroy();}
  function drain(socket,item){if(!item.drainTimer)item.drainTimer=setTimeout(()=>destroyClient(socket),drainTimeout);}
+ function hold(socket,item){if(!item.timer)item.timer=setTimeout(()=>destroyClient(socket),holdTimeout);}
+ function streamClient(socket,item,upstream){
+  if(item.upstream!==upstream||!item.admitted||item.waitDrain||item.streaming)return;
+  item.streaming=true;socket.removeListener('readable',item.readable);
+  if(item.eof){if(!upstream.writableEnded)upstream.end();drain(socket,item);}else{socket.pipe(upstream);socket.resume();}
+ }
+ function waitWritable(socket,item,upstream){
+  item.waitDrain=true;upstream.once('drain',()=>{if(item.upstream!==upstream)return;item.waitDrain=false;if(item.admitted)streamClient(socket,item,upstream);else pump(socket,item);});
+ }
+ // Keep at most one bounded request copy until the upstream sends its first byte.
+ function pump(socket,item){
+  const upstream=item.upstream;if(!item.connected||!upstream||item.waitDrain||socket.destroyed)return;
+  if(item.admitted){streamClient(socket,item,upstream);return;}
+  while(socket.readableLength>0&&!item.waitDrain){
+   if(!item.overflow&&item.size===replayLimit){item.overflow=true;item.copy=null;}
+   const available=socket.readableLength,amount=item.overflow?Math.min(available,65536):Math.min(available,replayLimit-item.size);
+   const chunk=socket.read(amount);if(!chunk)break;
+   if(!item.overflow){if(!item.copy)item.copy=allocReplay(replayLimit);chunk.copy(item.copy,item.size);item.size+=chunk.length;}
+   if(!item.responseTimer)item.responseTimer=setTimeout(()=>destroyClient(socket),responseTimeout);
+   if(!upstream.write(chunk))waitWritable(socket,item,upstream);
+  }
+  if(item.eof&&!item.waitDrain&&!upstream.writableEnded)upstream.end();else if(!socket.readableLength)socket.read(0);
+ }
  function unadmit(socket,item,upstream){
   if(item.upstream!==upstream||item.admitted)return;
-  item.upstream=null;item.generation=null;upstream.destroy();
-  if(!closing&&!socket.destroyed){clearTimeout(item.retryTimer);item.retryTimer=setTimeout(()=>{item.retryTimer=null;admit(socket,item);},admissionRetry);}
+  if(item.overflow){destroyClient(socket);return;}
+  item.upstream=null;item.generation=null;item.connected=false;item.waitDrain=false;upstream.destroy();
+  if(!closing&&!socket.destroyed){hold(socket,item);clearTimeout(item.retryTimer);item.retryTimer=setTimeout(()=>{item.retryTimer=null;admit(socket,item);},admissionRetry);}
  }
  function dropGeneration(gen){for(const [socket,item] of clients)if(item.generation===gen){if(item.admitted)destroyClient(socket);else unadmit(socket,item,item.upstream);}}
  function admit(socket,item){
@@ -116,26 +140,36 @@ async function main(directory=__dirname,{
   clearTimeout(item.retryTimer);item.retryTimer=null;
   const upstream=item.upstream=connectUpstream({host:'127.0.0.1',port:gen.port,allowHalfOpen:true});item.generation=gen;upstream.setNoDelay(true);
   upstream.on('error',()=>{if(item.upstream!==upstream)return;if(item.admitted)destroyClient(socket);else unadmit(socket,item,upstream);});
-  upstream.on('end',()=>{if(item.upstream===upstream&&item.admitted)drain(socket,item);});
+  upstream.on('end',()=>{if(item.upstream!==upstream)return;if(item.admitted)drain(socket,item);else unadmit(socket,item,upstream);});
   upstream.on('close',hadError=>{
    if(item.upstream!==upstream)return;
    if(!item.admitted){unadmit(socket,item,upstream);return;}
    if(hadError||!upstream.readableEnded){destroyClient(socket);return;}
    if(socket.writableFinished)socket.destroy();else socket.once('finish',()=>socket.destroy());
   });
+  upstream.once('data',chunk=>{
+   if(item.upstream!==upstream||closing||current!==gen||gen.stopping){if(item.upstream===upstream)unadmit(socket,item,upstream);return;}
+   item.admitted=true;item.copy=null;clearTimeout(item.timer);item.timer=null;clearTimeout(item.responseTimer);item.responseTimer=null;
+   const writable=socket.write(chunk);upstream.pipe(socket);if(!writable){upstream.pause();socket.once('drain',()=>{if(item.upstream===upstream)upstream.resume();});}
+   if(item.eof)drain(socket,item);streamClient(socket,item,upstream);
+  });
   upstream.once('connect',()=>{
    if(item.upstream!==upstream)return;
    if(closing||socket.destroyed){destroyClient(socket);return;}
    if(current!==gen||!gen.ready||gen.stopping){unadmit(socket,item,upstream);return;}
-   item.admitted=true;clearTimeout(item.timer);socket.pipe(upstream);upstream.pipe(socket);socket.resume();
+   item.connected=true;clearTimeout(item.timer);item.timer=null;
+   // Queue the replay before reading any newer client bytes, respecting drain.
+   if(item.size&&!upstream.write(item.copy.subarray(0,item.size)))waitWritable(socket,item,upstream);
+   pump(socket,item);
   });
  }
  function accept(socket){
   if(closing){socket.destroy();return;}
-  socket.pause();socket.setNoDelay(true);const item={upstream:null,generation:null,timer:setTimeout(()=>destroyClient(socket),holdTimeout)};clients.set(socket,item);
-  socket.on('end',()=>{if(item.admitted)drain(socket,item);});
+  socket.pause();socket.setNoDelay(true);const item={upstream:null,generation:null,copy:null,size:0,overflow:false,connected:false,eof:false};clients.set(socket,item);hold(socket,item);
+  item.readable=()=>pump(socket,item);socket.on('readable',item.readable);
+  socket.on('end',()=>{item.eof=true;if(item.admitted)drain(socket,item);else if(!item.size)drain(socket,item);pump(socket,item);});
   socket.on('error',()=>destroyClient(socket));socket.on('close',()=>{
-   clearTimeout(item.timer);clearTimeout(item.retryTimer);clearTimeout(item.drainTimer);item.upstream?.destroy();clients.delete(socket);if(!clients.size)maybeSwitch();
+   clearTimeout(item.timer);clearTimeout(item.responseTimer);clearTimeout(item.retryTimer);clearTimeout(item.drainTimer);item.upstream?.destroy();clients.delete(socket);if(!clients.size)maybeSwitch();
   });admit(socket,item);
  }
  function retry(ms){clearTimeout(retryTimer);retryTimer=setTimeout(()=>{retryTimer=null;start();},ms);}

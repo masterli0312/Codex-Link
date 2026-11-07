@@ -45,6 +45,27 @@ function natives({delayListen=0,neverListen=false,onSpawn}={}){
  };
  return {children,spawnNative};
 }
+function replayNatives({failures=1,ready,respond,afterFin=false}){
+ const children=[];
+ const spawnNative=(file,args)=>{
+  const child=new EventEmitter(),port=Number(new URL(args.at(-1)).port),sockets=new Set(),number=children.length+1;let ended=false;
+  child.pid=43000+number;child.stderr=new EventEmitter();child.port=port;child.received=[];child.connections=0;
+  const server=child.server=net.createServer({allowHalfOpen:true},socket=>{
+   sockets.add(socket);child.connections++;socket.on('error',()=>{});socket.on('close',()=>sockets.delete(socket));
+   let chunks=[],length=0,handled=false,fin=false;
+   const check=()=>{if(handled||!ready(Buffer.concat(chunks,length),number)||(typeof afterFin==='function'?afterFin(number):afterFin)&&!fin)return;handled=true;
+    const request=Buffer.concat(chunks,length);child.received.push(request);
+    if(number<=failures){socket.destroy();child.exit();}else respond(socket,request,child);
+   };
+   socket.on('data',chunk=>{chunks.push(chunk);length+=chunk.length;check();});socket.on('end',()=>{fin=true;check();});
+  });
+  child.exit=()=>{if(ended)return;ended=true;for(const socket of sockets)socket.destroy();if(server.listening)server.close(()=>child.emit('exit',1));else child.emit('exit',1);};
+  child.kill=()=>{child.exit();return true;};server.on('error',()=>child.exit());children.push(child);
+  server.listen({host:'127.0.0.1',port,exclusive:true});return child;
+ };
+ const probe=f=>async endpoint=>endpoint===f.endpoint?'free':children.find(c=>c.port===Number(new URL(endpoint).port))?.server.listening?'ready':'free';
+ return {children,spawnNative,probe};
+}
 async function start(t,f,opts){const result=await main(f.dir,options(opts));f.result=result;return result;}
 function connect(port){const socket=net.connect({host:'127.0.0.1',port});socket.on('error',()=>{});return socket;}
 async function identify(port){const socket=connect(port),chunks=[];socket.on('data',b=>chunks.push(b));await once(socket,'connect');socket.write('WHO');await once(socket,'end');socket.destroy();return Buffer.concat(chunks).toString();}
@@ -56,6 +77,100 @@ test('new clients during a native restart reach the new generation without refus
  fake.children[0].exit();await until(()=>f.health().state==='reconnecting');
  const client=connect(f.port),data=[];client.on('data',b=>data.push(b));await once(client,'connect');client.write('WHO');
  await once(client,'end');assert.equal(Buffer.concat(data).toString(),'2');client.destroy();
+});
+for(const failures of [1,3])test(`unanswered upstream failures replay exact request across ${failures} generations`,{timeout:5000},async t=>{
+ const f=await fixture(t),request=Buffer.from('first-second-third'),fake=replayNatives({failures,ready:b=>b.length>=request.length,respond:socket=>socket.end('answer')});
+ await start(t,f,{spawnNative:fake.spawnNative,probe:fake.probe(f),holdTimeout:1000,responseTimeout:2000});await until(()=>f.health().state==='ready');
+ const socket=connect(f.port),chunks=[];socket.on('data',b=>chunks.push(b));await once(socket,'connect');const ended=once(socket,'end');
+ socket.write('first-');await delay(15);socket.write('second-');await delay(15);socket.write('third');await ended;
+ assert.equal(Buffer.concat(chunks).toString(),'answer');assert.equal(fake.children.length,failures+1);
+ for(const child of fake.children)assert.deepEqual(child.received,[request]);socket.destroy();
+});
+test('a clean unanswered upstream FIN retries against the still-ready generation',{timeout:5000},async t=>{
+ const f=await fixture(t),request=Buffer.from('request'),fake=replayNatives({failures:0,ready:b=>b.length>=request.length,respond:(socket,bytes,child)=>socket.end(child.connections===1?'':'answer')});
+ await start(t,f,{spawnNative:fake.spawnNative,probe:fake.probe(f)});await until(()=>f.health().state==='ready');
+ const socket=connect(f.port),chunks=[];socket.on('data',b=>chunks.push(b));await once(socket,'connect');const ended=once(socket,'end');socket.write(request);await ended;
+ assert.equal(Buffer.concat(chunks).toString(),'answer');assert.equal(fake.children.length,1);assert.deepEqual(fake.children[0].received,[request,request]);socket.destroy();
+});
+test('new bytes received while held follow the replay in order',{timeout:5000},async t=>{
+ const f=await fixture(t),prefix=Buffer.from('original-'),suffix=Buffer.from('later'),all=Buffer.concat([prefix,suffix]);
+ const fake=replayNatives({failures:1,ready:(bytes,n)=>bytes.length>=(n===1?prefix.length:all.length),respond:socket=>socket.end('answer')});
+ await start(t,f,{spawnNative:fake.spawnNative,probe:fake.probe(f),retryDelays:[100]});await until(()=>f.health().state==='ready');
+ const socket=connect(f.port),chunks=[];socket.on('data',b=>chunks.push(b));await once(socket,'connect');const ended=once(socket,'end');socket.write(prefix);
+ await until(()=>f.health().state==='reconnecting');socket.write(suffix);await ended;
+ assert.deepEqual(fake.children[0].received,[prefix]);assert.deepEqual(fake.children[1].received,[all]);assert.equal(Buffer.concat(chunks).toString(),'answer');socket.destroy();
+});
+test('a limit-sized replay stays ordered when the new upstream responds before later bytes',{timeout:5000},async t=>{
+ const f=await fixture(t),prefix=crypto.randomBytes(65536),suffix=crypto.randomBytes(16384),expected=Buffer.concat([prefix,suffix]);let received;
+ const fake=replayNatives({failures:1,ready:(bytes,n)=>bytes.length>=(n===1?prefix.length:1),respond:(socket,first)=>{
+  const chunks=[first];let size=first.length;socket.write('!');const finish=()=>{if(size>=expected.length){received=Buffer.concat(chunks,size);socket.end('done');}};
+  socket.on('data',chunk=>{chunks.push(chunk);size+=chunk.length;finish();});finish();
+ }});
+ await start(t,f,{spawnNative:fake.spawnNative,probe:fake.probe(f),retryDelays:[100]});await until(()=>f.health().state==='ready');
+ const socket=connect(f.port),chunks=[];socket.on('data',b=>chunks.push(b));await once(socket,'connect');const ended=once(socket,'end');socket.write(prefix);
+ await until(()=>f.health().state==='reconnecting');socket.write(suffix);await ended;
+ assert.deepEqual(fake.children[0].received,[prefix]);assert.deepEqual(received,expected);assert.equal(Buffer.concat(chunks).toString(),'!done');socket.destroy();
+});
+test('a response byte commits admission and prevents replay after native exit',{timeout:5000},async t=>{
+ const f=await fixture(t),request=Buffer.from('request'),fake=replayNatives({failures:0,ready:b=>b.length>=request.length,respond:(socket,bytes,child)=>{socket.write('!');setTimeout(()=>child.exit(),25);}});
+ await start(t,f,{spawnNative:fake.spawnNative,probe:fake.probe(f)});await until(()=>f.health().state==='ready');const socket=connect(f.port);await once(socket,'connect');
+ const data=once(socket,'data'),closed=new Promise(resolve=>socket.once('close',resolve));socket.write(request);assert.equal((await data)[0].toString(),'!');await closed;
+ await until(()=>fake.children.length>=2&&f.health().state==='ready');await delay(80);assert.equal(fake.children[1].connections,0);
+});
+test('an oversized unanswered request is not replayed',{timeout:5000},async t=>{
+ const f=await fixture(t),request=crypto.randomBytes(256*1024),fake=replayNatives({failures:1,ready:b=>b.length>=request.length,respond:socket=>socket.end('unexpected')}),allocations=[];
+ await start(t,f,{spawnNative:fake.spawnNative,probe:fake.probe(f),replayLimit:1024,allocReplay:size=>{allocations.push(size);return Buffer.alloc(size);}});await until(()=>f.health().state==='ready');
+ const socket=connect(f.port);await once(socket,'connect');const closed=new Promise(resolve=>socket.once('close',resolve));socket.write(request);await closed;
+ await until(()=>fake.children.length>=2&&f.health().state==='ready');await delay(80);assert.deepEqual(fake.children[0].received,[request]);assert.equal(fake.children[1].connections,0);assert.deepEqual(allocations,[1024]);
+});
+test('a request followed by FIN is replayed before FIN on the next generation',{timeout:5000},async t=>{
+ const f=await fixture(t),request=Buffer.from('request-with-fin'),fake=replayNatives({failures:1,afterFin:true,ready:b=>b.length>=request.length,respond:socket=>socket.end('answer-after-fin')});
+ await start(t,f,{spawnNative:fake.spawnNative,probe:fake.probe(f)});await until(()=>f.health().state==='ready');
+ const socket=net.connect({host:'127.0.0.1',port:f.port,allowHalfOpen:true}),chunks=[];socket.on('error',()=>{});socket.on('data',b=>chunks.push(b));await once(socket,'connect');
+ const ended=once(socket,'end');socket.end(request);await ended;assert.equal(Buffer.concat(chunks).toString(),'answer-after-fin');
+ for(const child of fake.children)assert.deepEqual(child.received,[request]);socket.destroy();
+});
+test('FIN arriving while held follows replay and newly buffered bytes',{timeout:5000},async t=>{
+ const f=await fixture(t),prefix=Buffer.from('before-'),suffix=Buffer.from('after'),all=Buffer.concat([prefix,suffix]);
+ const fake=replayNatives({failures:1,afterFin:n=>n>1,ready:(bytes,n)=>bytes.length>=(n===1?prefix.length:all.length),respond:socket=>socket.end('finished')});
+ await start(t,f,{spawnNative:fake.spawnNative,probe:fake.probe(f),retryDelays:[100]});await until(()=>f.health().state==='ready');
+ const socket=net.connect({host:'127.0.0.1',port:f.port,allowHalfOpen:true}),chunks=[];socket.on('error',()=>{});socket.on('data',b=>chunks.push(b));await once(socket,'connect');
+ const ended=once(socket,'end');socket.write(prefix);await until(()=>f.health().state==='reconnecting');socket.end(suffix);await ended;
+ assert.deepEqual(fake.children[0].received,[prefix]);assert.deepEqual(fake.children[1].received,[all]);assert.equal(Buffer.concat(chunks).toString(),'finished');socket.destroy();
+});
+test('a connected idle client is not closed by the hold timeout',{timeout:5000},async t=>{
+ const f=await fixture(t),fake=replayNatives({failures:0,ready:()=>false,respond:()=>{}});
+ await start(t,f,{spawnNative:fake.spawnNative,probe:fake.probe(f),holdTimeout:70,responseTimeout:120});await until(()=>f.health().state==='ready');
+ const socket=connect(f.port);await once(socket,'connect');await until(()=>fake.children[0].connections===1);await delay(220);assert.equal(socket.destroyed,false);socket.destroy();
+});
+test('an unanswered request uses the longer response timeout instead of the hold timeout',{timeout:5000},async t=>{
+ const f=await fixture(t),fake=replayNatives({failures:0,ready:()=>false,respond:()=>{}});
+ await start(t,f,{spawnNative:fake.spawnNative,probe:fake.probe(f),holdTimeout:60,responseTimeout:200});await until(()=>f.health().state==='ready');
+ const socket=connect(f.port);await once(socket,'connect');const closed=new Promise(resolve=>socket.once('close',resolve));socket.write('waiting');
+ await delay(120);assert.equal(socket.destroyed,false);await closed;
+});
+test('retries do not restart the unanswered request timeout',{timeout:5000},async t=>{
+ const f=await fixture(t),request=Buffer.from('waiting'),fake=replayNatives({failures:100,ready:b=>b.length>=request.length,respond:()=>{}});
+ await start(t,f,{spawnNative:fake.spawnNative,probe:fake.probe(f),holdTimeout:300,responseTimeout:180,retryDelays:[15]});await until(()=>f.health().state==='ready');
+ const socket=connect(f.port);await once(socket,'connect');const born=Date.now(),closed=new Promise(resolve=>socket.once('close',resolve));socket.write(request);await closed;
+ assert.ok(fake.children.length>2);assert.ok(Date.now()-born<400);
+});
+test('a client waiting for its first upstream byte counts as held',{timeout:5000},async t=>{
+ const f=await fixture(t),next=path.join(f.dir,'new','codex.exe'),fake=replayNatives({failures:0,ready:()=>false,respond:()=>{}});let updated=false;
+ await start(t,f,{spawnNative:fake.spawnNative,probe:fake.probe(f),runtimeInterval:30,resolveAsync:async()=>updated?next:path.join(f.dir,'old','codex.exe')});await until(()=>f.health().state==='ready');
+ const socket=connect(f.port);await once(socket,'connect');socket.write('request');await until(()=>fake.children[0].connections===1);updated=true;await until(()=>f.health().pendingExecutable===next);
+ assert.equal(f.health().clients,1);assert.equal(f.health().heldClients,1);socket.destroy();
+});
+test('a real WebSocket handshake survives an unanswered first generation',{timeout:5000},async t=>{
+ const f=await fixture(t),fake=replayNatives({failures:1,ready:b=>b.includes(Buffer.from('\r\n\r\n')),respond:(socket,request)=>{
+  const key=/sec-websocket-key:\s*([^\r\n]+)/i.exec(request.toString())?.[1];assert.ok(key);
+  const accept=crypto.createHash('sha1').update(key.trim()+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+  socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: '+accept+'\r\n\r\n');
+  socket.once('data',()=>socket.end(Buffer.from([136,0])));
+ }});
+ await start(t,f,{spawnNative:fake.spawnNative,probe:fake.probe(f)});await until(()=>f.health().state==='ready');
+ const socket=new WebSocket(f.endpoint);await new Promise((resolve,reject)=>{socket.addEventListener('open',resolve,{once:true});socket.addEventListener('error',reject,{once:true});});
+ assert.deepEqual(fake.children[0].received,fake.children[1].received);socket.close();
 });
 for(const removed of ['executable','sidecar'])test(`restart resolves a new runtime after the ${removed} is removed`,async t=>{
  const f=await fixture(t),fake=natives(),next=path.join(f.dir,'new','codex.exe');let resolutions=0;
@@ -117,12 +232,12 @@ test('a slow reader receives a complete large response after a half-close',async
 });
 test('a half-closed pair is bounded and both relay sockets disable Nagle',async t=>{
  const f=await fixture(t),sockets=new Set(),flags=[];let server;
- const spawnNative=(file,args)=>{const child=new EventEmitter();child.pid=41000;child.stderr=new EventEmitter();server=net.createServer({allowHalfOpen:true},socket=>{sockets.add(socket);socket.on('error',()=>{});socket.on('close',()=>sockets.delete(socket));socket.resume();});
+ const spawnNative=(file,args)=>{const child=new EventEmitter();child.pid=41000;child.stderr=new EventEmitter();server=net.createServer({allowHalfOpen:true},socket=>{sockets.add(socket);socket.on('error',()=>{});socket.on('close',()=>sockets.delete(socket));socket.write('!');socket.resume();});
   server.listen({host:'127.0.0.1',port:Number(new URL(args.at(-1)).port),exclusive:true});child.kill=()=>{for(const socket of sockets)socket.destroy();server.close(()=>child.emit('exit',0));return true;};return child;};
  const wrap=(socket,side)=>{const original=socket.setNoDelay;socket.setNoDelay=function(value){flags.push([side,value]);return original.call(this,value);};return socket;};
  await start(t,f,{spawnNative,drainTimeout:80,probe:async endpoint=>endpoint===f.endpoint?'free':'ready',
   createRelay:handler=>net.createServer({pauseOnConnect:true,allowHalfOpen:true},socket=>handler(wrap(socket,'client'))),connectUpstream:opts=>wrap(net.connect(opts),'upstream')});
- await until(()=>server?.listening&&f.health().state==='ready');const socket=net.connect({host:'127.0.0.1',port:f.port,allowHalfOpen:true});socket.on('error',()=>{});await once(socket,'connect');
+ await until(()=>server?.listening&&f.health().state==='ready');const socket=net.connect({host:'127.0.0.1',port:f.port,allowHalfOpen:true});socket.on('error',()=>{});const data=once(socket,'data');await once(socket,'connect');assert.equal((await data)[0].toString(),'!');
  const closed=new Promise(resolve=>socket.once('close',resolve));socket.end('request');await closed;assert.deepEqual(flags,[['client',true],['upstream',true]]);
 });
 
