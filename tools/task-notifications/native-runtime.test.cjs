@@ -27,9 +27,39 @@ test('an existing native CLI on PATH is used without interpreting shell argument
 test('desktop cache discovery selects an existing recent native file and ignores missing or zero-byte files',()=>{
  const f=fixture();try{
   const old=f.file('OpenAI/Codex/bin/old/codex.exe'),current=f.file('OpenAI/Codex/bin/current/codex.exe');
+  f.file('OpenAI/Codex/bin/old/codex-code-mode-host.exe');f.file('OpenAI/Codex/bin/current/codex-code-mode-host.exe');
   fs.utimesSync(path.dirname(old),new Date(1000),new Date(1000));fs.utimesSync(path.dirname(current),new Date(2000),new Date(2000));
   f.file('OpenAI/Codex/bin/newest/other.txt');assert.equal(resolveNativeExecutable('',f.options),current);
   fs.truncateSync(current,0);assert.equal(resolveNativeExecutable('',f.options),old);
+ }finally{f.close();}
+});
+test('a pinned desktop cache folder pruned by an update moves to the runtime of the installed desktop',()=>{
+ const f=fixture();try{
+  const pinned=f.file('OpenAI/Codex/bin/pruned/codex.exe'); // the update removed its sidecars
+  const runtime=f.file('OpenAI/Codex/bin/updated/codex.exe');fs.writeFileSync(runtime,'updated runtime');f.file('OpenAI/Codex/bin/updated/codex-code-mode-host.exe');
+  const install=f.file('package/app/resources/codex.exe');fs.writeFileSync(install,'updated runtime');f.file('package/app/resources/codex-code-mode-host.exe');
+  fs.utimesSync(path.dirname(pinned),new Date(3000),new Date(3000));fs.utimesSync(path.dirname(runtime),new Date(1000),new Date(1000));
+  assert.equal(resolveNativeExecutable(pinned,{...f.options,queryPackage:()=>path.join(f.root,'package')}),runtime);
+  fs.rmSync(path.dirname(runtime),{recursive:true});
+  assert.equal(resolveNativeExecutable(pinned,{...f.options,queryPackage:()=>path.join(f.root,'package')}),install);
+ }finally{f.close();}
+});
+test('a complete but outdated pinned desktop runtime follows the installed desktop version',()=>{
+ const f=fixture();try{
+  const pinned=f.file('OpenAI/Codex/bin/old/codex.exe');f.file('OpenAI/Codex/bin/old/codex-code-mode-host.exe');
+  const runtime=f.file('OpenAI/Codex/bin/new/codex.exe');fs.writeFileSync(runtime,'newer runtime');f.file('OpenAI/Codex/bin/new/codex-code-mode-host.exe');
+  const install=f.file('package/app/resources/codex.exe');fs.writeFileSync(install,'newer runtime');
+  assert.equal(resolveNativeExecutable(pinned,{...f.options,queryPackage:()=>path.join(f.root,'package')}),runtime);
+  // Without a resolvable desktop package the complete pinned runtime is still usable.
+  assert.equal(resolveNativeExecutable(pinned,{...f.options,queryPackage:()=>''}),pinned);
+ }finally{f.close();}
+});
+test('desktop cache discovery skips folders whose sidecars were pruned',()=>{
+ const f=fixture();try{
+  const complete=f.file('OpenAI/Codex/bin/complete/codex.exe');f.file('OpenAI/Codex/bin/complete/codex-code-mode-host.exe');
+  const pruned=f.file('OpenAI/Codex/bin/pruned/codex.exe');
+  fs.utimesSync(path.dirname(complete),new Date(1000),new Date(1000));fs.utimesSync(path.dirname(pruned),new Date(2000),new Date(2000));
+  assert.equal(resolveNativeExecutable('',f.options),complete);
  }finally{f.close();}
 });
 test('failed or relative desktop discovery has a closed error without exposing its private diagnostics',()=>{
